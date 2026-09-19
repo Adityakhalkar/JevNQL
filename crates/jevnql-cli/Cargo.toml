@@ -6,7 +6,7 @@ rust-version.workspace = true
 description = "JevNQL command-line interface"
 
 [[bin]]
-name = "jevnql-engine"
+name = "jevnql"
 path = "src/main.rs"
 
 [dependencies]

@@ -1,0 +1,10 @@
+-- Find the customers who spent the most this year and seem increasingly unhappy with our pricing.
+FROM customers
+WITH orders  AS spend   (SUM amount WHERE order_date >= DATE '2026-01-01')
+WITH reviews AS history (LAST 30 BY created_at FIELDS (created_at, rating, text))
+SCORE dissatisfaction: "Across this customer's reviews, how increasingly dissatisfied do they appear with our pricing?"
+    LEVELS ("No pricing complaints, or satisfaction with pricing is stable or improving",
+            "Occasional pricing complaints with no clear worsening trend",
+            "Pricing complaints that grow more frequent or more severe over time")
+RANK BY spend DESC, customer_id LIMIT 20
+RETURN customer_id, name, spend, dissatisfaction

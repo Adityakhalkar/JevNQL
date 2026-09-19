@@ -1,8 +1,8 @@
-//! `jevnql-engine`: the JevNQL engine's command-line interface.
+//! `jevnql`: the JevNQL command-line interface.
 //!
-//! Plan-level commands (`explain`, `run`) are for people; `catalog`,
-//! `validate` and `serve` speak JSON and are the boundary the Python NL
-//! compiler and shell use until native bindings exist.
+//! `jevnql data/*.csv` opens the NQL shell; `query` runs one NQL query;
+//! `explain` / `run` take JevIR plans directly. `catalog`, `validate` and
+//! `serve` speak JSON for tools and future language bindings.
 
 mod render;
 mod repl;
@@ -17,7 +17,12 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 #[derive(Parser)]
-#[command(name = "jevnql-engine", version, about = "JevNQL engine: validate, optimize and run JevIR plans")]
+#[command(
+    name = "jevnql",
+    version,
+    about = "Query values and meaning: NQL compiled to optimized DataFusion + Jev plans",
+    after_help = "`jevnql <files>...` is short for `jevnql repl <files>...`."
+)]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -119,7 +124,7 @@ type Error = Box<dyn std::error::Error>;
 
 #[tokio::main]
 async fn main() -> ExitCode {
-    match run(Cli::parse()).await {
+    match run(Cli::parse_from(with_default_command(std::env::args().collect()))).await {
         Ok(code) => code,
         Err(e) => {
             eprintln!("error: {e}");
@@ -151,8 +156,32 @@ fn read_plan(plan: &str) -> Result<String, Error> {
     })
 }
 
+/// `jevnql [options] <files>` means `jevnql [options] repl <files>`: inserts
+/// `repl` before the first positional argument that is not a subcommand.
+fn with_default_command(mut args: Vec<String>) -> Vec<String> {
+    use clap::CommandFactory;
+    let cmd = Cli::command();
+    let known: Vec<String> = cmd.get_subcommands().map(|c| c.get_name().to_string()).chain(["help".into()]).collect();
+    let mut i = 1;
+    while i < args.len() {
+        let a = &args[i];
+        if a == "--backend" || a == "--max-semantic-rows" {
+            i += 2;
+        } else if a.starts_with('-') {
+            i += 1;
+        } else {
+            if !known.contains(a) {
+                args.insert(i, "repl".into());
+            }
+            break;
+        }
+    }
+    args
+}
+
 async fn run(cli: Cli) -> Result<ExitCode, Error> {
-    match &cli.command {
+    let command = &cli.command;
+    match command {
         Command::Catalog { files } => {
             let engine = open(&cli, files, false).await?;
             println!("{}", handle(&engine, Request::Catalog).await);
@@ -167,7 +196,7 @@ async fn run(cli: Cli) -> Result<ExitCode, Error> {
             }
         }
         Command::Explain { plan, no_optimize, files } | Command::Run { plan, no_optimize, files } => {
-            let explain_only = matches!(cli.command, Command::Explain { .. });
+            let explain_only = matches!(command, Command::Explain { .. });
             let engine = open(&cli, files, !explain_only).await?;
             let plan: Value = serde_json::from_str(&read_plan(plan)?)?;
             let out = handle(&engine, Request::Run { plan, explain_only, optimize: !no_optimize }).await;

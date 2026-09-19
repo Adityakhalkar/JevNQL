@@ -1,0 +1,16 @@
+-- ...and rank them by how likely they seem to leave.
+FROM customers
+WITH reviews AS review_count (COUNT)
+WITH reviews AS history (LAST 30 BY created_at FIELDS (created_at, rating, text))
+WITH tickets AS ticket_history (LAST 20 BY created_at FIELDS (created_at, subject, body))
+FIND customers WHO:
+    review_count >= 8
+    AND "This customer's reviews show dissatisfaction with our pricing or with how much they pay" USING history
+SCORE leave_risk: "Based on this customer's reviews and support tickets, how likely are they to cancel or stop using our product?"
+    LEVELS ("No sign of leaving: engaged and satisfied",
+            "Some frustration, but no talk of leaving",
+            "Openly questioning the value or mentioning alternatives",
+            "Clear intent to cancel, not renew, or switch to a competitor")
+    USING history, ticket_history
+RANK BY leave_risk DESC, customer_id LIMIT 20
+RETURN customer_id, name, review_count, leave_risk

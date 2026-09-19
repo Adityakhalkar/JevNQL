@@ -2,8 +2,6 @@
 .env
 .env.*
 /target/
-.venv/
-__pycache__/
-.pytest_cache/
 examples/data/*
 !examples/data/mini/
+__pycache__/

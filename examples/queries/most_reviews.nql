@@ -1,0 +1,5 @@
+-- Which customers have submitted the most reviews?
+FROM customers
+WITH reviews AS review_count (COUNT)
+RANK BY review_count DESC, customer_id LIMIT 10
+RETURN customer_id, name, segment, review_count

@@ -1,4 +1,4 @@
-//! JSON boundary between frontends (e.g. the Python NL compiler) and the core.
+//! JSON boundary between frontends (NQL, tools, future bindings) and the core.
 //!
 //! A plan document is a list of steps; each step names its inputs by the ids of
 //! earlier steps, so documents are acyclic by construction:

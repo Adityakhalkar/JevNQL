@@ -1,0 +1,9 @@
+-- Which of our most active customers seem unhappy with pricing?
+FROM customers
+WITH reviews AS review_count (COUNT)
+WITH reviews AS history (LAST 30 BY created_at FIELDS (created_at, rating, text))
+FIND customers WHO:
+    review_count >= 8
+    AND "This customer's reviews show dissatisfaction with our pricing or with how much they pay"
+RANK BY review_count DESC, customer_id
+RETURN customer_id, name, segment, review_count
