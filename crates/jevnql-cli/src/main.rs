@@ -122,6 +122,15 @@ fn yes() -> bool {
     true
 }
 
+/// Whether judgments go to a real (billed) backend.
+pub(crate) fn live_backend(engine: &Engine) -> bool {
+    engine.backend_name().is_some_and(|n| n != "simulated")
+}
+
+pub(crate) fn backend_price(engine: &Engine) -> f64 {
+    engine.session().semantic_backend().map_or(0.0, |b| b.info().usd_per_million_input_tokens)
+}
+
 type Error = Box<dyn std::error::Error>;
 
 #[tokio::main]
@@ -216,15 +225,18 @@ async fn run(cli: Cli) -> Result<ExitCode, Error> {
                 (None, Some(path)) => std::fs::read_to_string(path)?,
                 (None, None) => return Err("give a query with -e or --file".into()),
             };
-            let mut engine = open(&cli, files, !explain && !emit_ir).await?;
+            // the backend also decides how a plain-English question is read, so
+            // it is needed even when only explaining
+            let mut engine = open(&cli, files, true).await?;
             let vocab = engine.vocabulary().await?;
             if !*emit_ir && std::io::IsTerminal::is_terminal(&std::io::stdout()) {
                 let ui = ui::Ui::new();
-                engine.session_mut().set_progress(Some(ui.progress_hook()));
+                let (live, price) = (live_backend(&engine), backend_price(&engine));
+                engine.session_mut().set_progress(Some(ui.progress_hook(live, price)));
                 let done = repl::answer(&ui, &engine, &vocab, &source, *explain, !no_optimize).await;
                 return Ok(if done.is_some() { ExitCode::SUCCESS } else { ExitCode::FAILURE });
             }
-            let asked = match ask::compile(&engine, &vocab, &source) {
+            let asked = match ask::compile(&engine, &vocab, &source).await {
                 Ok(a) => a,
                 Err(e) => {
                     eprintln!("error: {}", e.message);

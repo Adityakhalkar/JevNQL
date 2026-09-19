@@ -49,6 +49,82 @@ pub struct Relation {
     pub key: String,
     /// p25, p50, p75, p90 of child rows per parent key (keys with >= 1 row).
     pub count_percentiles: [f64; 4],
+    /// For a child with a money column: that column and p25..p90 of its
+    /// per-parent total.
+    pub sum_percentiles: Option<(String, [f64; 4])>,
+}
+
+/// The column that holds money in a table (`amount`, `price`, ...), if any.
+pub fn money_column(table: &Table) -> Option<&Column> {
+    table.columns.iter().find(|c| c.kind == ColumnKind::Number && MONEY_COLUMNS.contains(&c.name.as_str()))
+}
+
+/// A phrase the rules could not settle, with candidate readings built from
+/// the schema and data. A semantic model picks one; without one, the first
+/// option is used.
+#[derive(Debug, Clone)]
+pub struct Decision {
+    pub phrase: String,
+    /// What to ask the model.
+    pub question: String,
+    pub options: Vec<DecisionOption>,
+}
+
+#[derive(Debug, Clone)]
+pub struct DecisionOption {
+    /// Short identifier (the model answers with it).
+    pub label: String,
+    /// What this reading means, in words.
+    pub description: String,
+    effect: Effect,
+}
+
+#[derive(Debug, Clone)]
+enum Effect {
+    /// Many related rows: `<alias> >= threshold` over COUNT.
+    Count { child: String, threshold: i64 },
+    /// High total of a money column: `spend >= threshold` over SUM.
+    Sum { child: String, column: String, threshold: f64 },
+    /// A judgment read from the given related tables (empty: the row's own text).
+    Judgment { text: String, sources: Vec<String> },
+}
+
+/// The model's pick for one decision.
+#[derive(Debug, Clone)]
+pub struct Chosen {
+    pub option: usize,
+    pub confidence: Option<f64>,
+    /// The next most likely option and its probability.
+    pub runner_up: Option<(usize, f64)>,
+}
+
+/// A question analyzed up to its open decisions.
+pub struct Analysis<'v> {
+    plan: Plan<'v>,
+    pub decisions: Vec<Decision>,
+}
+
+impl Analysis<'_> {
+    /// Applies the chosen readings (missing entries use the first option).
+    pub fn resolve(mut self, chosen: &[Chosen]) -> Translation {
+        let decisions = std::mem::take(&mut self.decisions);
+        for (i, d) in decisions.iter().enumerate() {
+            let pick = chosen.get(i);
+            let option = pick.map_or(0, |c| c.option.min(d.options.len() - 1));
+            let tag = match pick.and_then(|c| c.confidence) {
+                Some(conf) => {
+                    let alt = pick
+                        .and_then(|c| c.runner_up)
+                        .map(|(j, p)| format!(", else {} {:.0}%", d.options[j].label, p * 100.0))
+                        .unwrap_or_default();
+                    format!("  [Jev {:.0}%{alt}]", conf * 100.0)
+                }
+                None => String::new(),
+            };
+            self.plan.apply(&d.phrase, &d.options[option], &tag);
+        }
+        self.plan.finish()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -164,9 +240,12 @@ struct Aggregate {
 struct Plan<'v> {
     vocab: &'v Vocabulary,
     root: &'v Table,
+    question: String,
     aggregates: Vec<Aggregate>,
     conditions: Vec<String>,
-    judgments: Vec<String>,
+    /// Judgment text and the related tables it reads (empty: the row's own text).
+    judgments: Vec<(String, Vec<String>)>,
+    decisions: Vec<Decision>,
     rank: Option<(String, bool)>,
     limit: Option<i64>,
     notes: Vec<String>,
@@ -174,7 +253,13 @@ struct Plan<'v> {
     unresolved: Vec<String>,
 }
 
+/// Translates with default readings (no semantic model involved).
 pub fn translate(question: &str, vocab: &Vocabulary, today: (i32, u32, u32)) -> Result<Translation, NlError> {
+    Ok(analyze(question, vocab, today)?.resolve(&[]))
+}
+
+/// Interprets everything the rules can settle; the rest becomes decisions.
+pub fn analyze<'v>(question: &str, vocab: &'v Vocabulary, today: (i32, u32, u32)) -> Result<Analysis<'v>, NlError> {
     let toks = tokenize(question);
     let mentioned = toks.iter().find_map(|t| vocab.tables.iter().find(|tb| lemma(&tb.name) == t.lemma));
     // unnamed subject: the table most others relate to ("biggest spenders" -> customers)
@@ -200,9 +285,11 @@ pub fn translate(question: &str, vocab: &Vocabulary, today: (i32, u32, u32)) -> 
     let mut plan = Plan {
         vocab,
         root,
+        question: question.trim().to_string(),
         aggregates: Vec::new(),
         conditions: Vec::new(),
         judgments: Vec::new(),
+        decisions: Vec::new(),
         rank: None,
         limit: None,
         notes: Vec::new(),
@@ -247,7 +334,8 @@ pub fn translate(question: &str, vocab: &Vocabulary, today: (i32, u32, u32)) -> 
             "couldn't tell which column \"{phrase}\" is about; name it (e.g. \"average rating above 3\", \"total spend over 20\") or write NQL"
         )));
     }
-    Ok(plan.finish())
+    let decisions = std::mem::take(&mut plan.decisions);
+    Ok(Analysis { plan, decisions })
 }
 
 impl<'v> Plan<'v> {
@@ -348,8 +436,10 @@ impl<'v> Plan<'v> {
         }
 
         // spending: "biggest spenders", "spent the most", "high-value"
+        let ranks_or_compares = norms.iter().any(|n| SUPERLATIVES.contains(n) || matches!(*n, "big" | "heavy" | "high-value" | "top-spending"))
+            || comparison(&norms, &mut used.clone()).is_some();
         if let Some(pos) = clause.iter().position(|t| {
-            SPEND_WORDS.contains(&t.norm.as_str()) || t.norm == "high-value" || t.norm == "top-spending"
+            ranks_or_compares && (SPEND_WORDS.contains(&t.norm.as_str()) || t.norm == "high-value" || t.norm == "top-spending")
         }) {
             if let Some((rel, money)) = self.money_relation() {
                 let alias = "spend".to_string();
@@ -505,9 +595,97 @@ impl<'v> Plan<'v> {
             .filter(|(k, _)| !used[start + k] || STOP.contains(&norms[start + k]))
             .map(|(_, t)| t.text.as_str())
             .collect();
-        let judgment = self.phrase_judgment(&words);
-        self.notes.push(format!("\"{}\" → judgment for Jev: {judgment}", words.join(" ")));
-        self.judgments.push(judgment);
+        self.decide(words.join(" "), self.phrase_judgment(&words));
+    }
+
+    /// Candidate readings for an unexplained phrase: a judgment over each
+    /// plausible evidence source, and facts computable from related tables.
+    fn decide(&mut self, phrase: String, judgment: String) {
+        let entity = self.singular(&self.root.name);
+        let sources: Vec<String> = self.history_relations().iter().map(|r| r.child.clone()).collect();
+        let mut options = Vec::new();
+        let judge = |label: String, description: String, sources: Vec<String>| DecisionOption {
+            label,
+            description,
+            effect: Effect::Judgment { text: judgment.clone(), sources },
+        };
+        match sources.as_slice() {
+            [] => options.push(judge("judge_text".into(), format!("a judgment about meaning, read from the {entity}'s own text"), vec![])),
+            [one] => options.push(judge(format!("judge_{one}"), format!("a judgment about meaning, read from each {entity}'s {one}"), sources.clone())),
+            many => {
+                options.push(judge(
+                    "judge_all".into(),
+                    format!("a judgment about meaning, read from each {entity}'s {}", many.join(" and ")),
+                    sources.clone(),
+                ));
+                for s in many {
+                    options.push(judge(format!("judge_{s}"), format!("a judgment about meaning, read only from each {entity}'s {s}"), vec![s.clone()]));
+                }
+            }
+        }
+        for rel in self.children() {
+            let t = rel.count_percentiles[2].ceil() as i64;
+            options.push(DecisionOption {
+                label: format!("many_{}", rel.child),
+                description: format!(
+                    "a fact from the {} table: {} with many {} (at least {t}, the top 25% by number of {})",
+                    rel.child, self.root.name, rel.child, rel.child
+                ),
+                effect: Effect::Count { child: rel.child.clone(), threshold: t },
+            });
+            if let Some((column, p)) = &rel.sum_percentiles {
+                options.push(DecisionOption {
+                    label: format!("high_total_{}", column),
+                    description: format!(
+                        "a fact from the {} table: {} whose total {} is high (at least {:.2}, the top 25%)",
+                        rel.child, self.root.name, column, p[2]
+                    ),
+                    effect: Effect::Sum { child: rel.child.clone(), column: column.clone(), threshold: p[2] },
+                });
+            }
+        }
+        let decision = Decision {
+            question: format!(
+                "In the data question \"{}\", what does the phrase \"{phrase}\" ask for? Facts are exact numbers in the data; judgments need reading text.",
+                self.question
+            ),
+            phrase,
+            options,
+        };
+        match decision.options.len() {
+            1 => self.apply(&decision.phrase, &decision.options[0], ""),
+            _ => self.decisions.push(decision),
+        }
+    }
+
+    /// Applies one reading of a phrase to the plan.
+    fn apply(&mut self, phrase: &str, option: &DecisionOption, tag: &str) {
+        match &option.effect {
+            Effect::Count { child, threshold } => {
+                let alias = format!("{}_count", self.singular(child));
+                if !self.aggregates.iter().any(|a| a.alias == alias) {
+                    self.aggregates.push(Aggregate { child: child.clone(), alias: alias.clone(), func: "COUNT".into(), date_filter: None });
+                }
+                self.conditions.push(format!("{alias} >= {threshold}"));
+                self.notes.push(format!("\"{phrase}\" → at least {threshold} {child} (top 25%){tag}"));
+            }
+            Effect::Sum { child, column, threshold } => {
+                let alias = "spend".to_string();
+                if !self.aggregates.iter().any(|a| a.alias == alias) {
+                    self.aggregates.push(Aggregate { child: child.clone(), alias: alias.clone(), func: format!("SUM {column}"), date_filter: None });
+                }
+                self.conditions.push(format!("{alias} >= {threshold:.2}"));
+                self.notes.push(format!("\"{phrase}\" → total {child}.{column} ≥ {threshold:.2} (top 25%){tag}"));
+            }
+            Effect::Judgment { text, sources } => {
+                let from = match sources.as_slice() {
+                    [] => String::new(),
+                    s => format!(" (reads {})", s.join(" + ")),
+                };
+                self.notes.push(format!("\"{phrase}\" → judgment for Jev: {text}{from}{tag}"));
+                self.judgments.push((text.clone(), sources.clone()));
+            }
+        }
     }
 
     /// Turns a clause into a yes/no question about one root entity.
@@ -567,8 +745,9 @@ impl<'v> Plan<'v> {
             let filter = a.date_filter.as_ref().map(|f| format!(" WHERE {f}")).unwrap_or_default();
             lines.push(format!("WITH {} AS {} ({}{filter})", a.child, a.alias, a.func));
         }
+        let used_sources: Vec<String> = self.judgments.iter().flat_map(|(_, s)| s.clone()).collect();
         if !self.judgments.is_empty() {
-            for rel in self.history_relations() {
+            for rel in self.history_relations().into_iter().filter(|r| used_sources.contains(&r.child)) {
                 let Some(t) = self.table(&rel.child) else { continue };
                 let date = t.columns.iter().find(|c| c.kind == ColumnKind::Date).map(|c| c.name.clone());
                 let fields: Vec<&str> = t
@@ -580,11 +759,22 @@ impl<'v> Plan<'v> {
                 let order = date.as_ref().map(|d| format!("LAST 20 BY {d} ")).unwrap_or_default();
                 let alias = format!("{}_history", self.singular(&rel.child));
                 lines.push(format!("WITH {} AS {alias} ({order}FIELDS ({}))", rel.child, fields.join(", ")));
-                self.notes.push(format!("judgments read {alias} (up to 20 most recent {})", rel.child));
+                self.notes.push(format!("{alias}: up to 20 most recent {} per {}", rel.child, self.singular(&self.root.name)));
             }
         }
         let mut conds: Vec<String> = self.conditions.clone();
-        conds.extend(self.judgments.iter().map(|j| quote_judgment(j)));
+        let own_text: Vec<String> =
+            self.root.columns.iter().filter(|c| c.kind == ColumnKind::Text).map(|c| c.name.clone()).collect();
+        for (text, sources) in &self.judgments {
+            let using: Vec<String> = match sources.is_empty() {
+                true => own_text.clone(),
+                false => sources.iter().map(|s| format!("{}_history", self.singular(s))).collect(),
+            };
+            conds.push(match using.is_empty() {
+                true => quote_judgment(text),
+                false => format!("{} USING {}", quote_judgment(text), using.join(", ")),
+            });
+        }
         if !conds.is_empty() {
             lines.push(format!("FIND {} WHO: {}", self.root.name, conds.join("\n    AND ")));
         }

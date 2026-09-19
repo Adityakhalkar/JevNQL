@@ -145,7 +145,12 @@ pub fn parse_response(request: &SemanticRequest, body: &Value) -> Result<Semanti
                 if !options.iter().any(|o| o.label == label) {
                     return Err(bad(format!("answer `{id}` chose unknown option `{label}`")));
                 }
-                Answer::Choice { label: label.to_string(), confidence: num("confidence")? }
+                let mut probabilities: Vec<(String, f64)> = options
+                    .iter()
+                    .map(|o| (o.label.clone(), a.pointer(&format!("/probabilities/{}", o.label.replace('~', "~0").replace('/', "~1"))).and_then(Value::as_f64).unwrap_or(0.0)))
+                    .collect();
+                probabilities.sort_by(|x, y| y.1.total_cmp(&x.1));
+                Answer::Choice { label: label.to_string(), confidence: num("confidence")?, probabilities }
             }
         };
         answers.insert(id.clone(), answer);

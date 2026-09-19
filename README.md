@@ -8,9 +8,10 @@ Query languages operate on *values*: `WHERE revenue > 10000`. Real questions oft
 
 "Spent the most this year" is arithmetic. "Seem increasingly unhappy" is judgment. JevNQL expresses both in one query language, NQL. It compiles the query into one typed plan (JevIR), sends the arithmetic to a relational engine ([Apache DataFusion](https://datafusion.apache.org)), sends only the judgments to a semantic model ([Jev](https://docs.typesafe.ai)), and orders the work so the expensive part sees as few rows as possible.
 
-Compilation is deterministic, with no language model involved. Jev is used only to evaluate judgments, at execution time.
+Jev does two jobs: it **decides what a question means** (choosing between readings built from your data) and it **judges meaning in the data** (over the rows the optimizer narrows down). No generative LLM is involved.
 
 ```text
+plain English ──► jev-nl (NLP candidates) ──► Jev decides ──► NQL
 NQL ──► jev-nql (parser) ──► logical JevIR ──► optimizer ──► physical plan
                                                                   │
                                                       ┌───────────┴───────────┐
@@ -102,6 +103,32 @@ jevnql query --file q.nql data/*.csv            # one query; add --explain or --
 jevnql run --plan plan.json data/*.csv          # a JevIR plan document directly
 ```
 
+## Plain English
+
+Type questions as you would ask a colleague:
+
+```text
+❯ enterprise customers with many orders who sound like they're leaving
+● Understood
+  enterprise                  customers.segment = 'enterprise'
+  many orders                 at least 43 (top 25% of customers by order count)
+  sound like they're leaving  Jev judges: does this customer sound like they're leaving? (reads reviews + tickets)
+```
+
+- **Classic NLP proposes.** Words are linked to tables, columns and real values in your data ("enterprise" is a value of `segment`). Pattern rules handle quantities, comparisons, rankings and time windows. "many" means the top 25% of *your* data.
+- **Jev decides.** Phrases the rules can't settle become decisions with candidate readings: a fact computable from a related table (order count, total spend) or a judgment read from a chosen source (reviews, tickets, or both). Jev picks one, and all of a question's decisions go in **one request**. For example, "frequent spenders" becomes `at least 43 orders` (Jev 51%, runner-up total spend 39%). That's 1 request instead of judging 5,000 customers.
+- **Numbers never go to Jev as judgments.** "paid more than $20" is a filter on total spend; an unplaceable comparison is an error, not a guess.
+- **You always see the reading** (and the generated NQL with `\verbose`). Anything starting with `FROM` is NQL, run as written.
+
+## Token efficiency
+
+Jev bills input tokens, so JevNQL minimizes tokens × judgments:
+
+- **Fewer rows:** deterministic filters and top-k run before semantic work (predicate pushdown, late execution).
+- **Fewer requests:** identical states are judged once, answers are cached for the session, and questions over the same state share one request.
+- **Smaller states:** only the context columns are sent. Histories are capped (`LAST n`) and encoded as compact tables (field names once, one line per record), which measured about 33% fewer tokens than JSON records. Jev chooses the evidence, so a judgment reads only the sources it needs (reviews-only states measured about 48% smaller than reviews + tickets).
+- **No surprises:** a live job over 1,000 requests shows its estimated tokens, cost and time and waits for `y`. No answer cancels.
+
 ## NQL
 
 ```text
@@ -170,8 +197,9 @@ The data comes from `examples/generate.py`: synthetic customers, orders, reviews
 
 ## Status
 
-Working and tested (54 Rust tests):
-- NQL, JevIR, the optimizer, DataFusion execution on CSV and Parquet, the CLI, and the shell.
+Working and tested (67 Rust tests):
+- Plain English (NLP + Jev decisions), NQL, JevIR, the optimizer, and DataFusion execution on CSV and Parquet.
+- The interactive shell.
 - Live Jev, verified against the TypeSafe API.
 
 Known limits:
@@ -186,6 +214,7 @@ Known limits:
 ```text
 crates/
   jevir/          logical + physical IR, types, expressions, JSON, validation, EXPLAIN
+  jev-nl/         plain English → NQL: NLP candidates and decisions for Jev
   jev-nql/        NQL lexer, parser and compiler to JevIR
   jev-optimizer/  rewrite rules, logical → physical planning, batch fusion
   jev-executor/   DataFusion lowering, JevBatchExec runtime, metrics, table profiles
@@ -198,7 +227,7 @@ benchmarks/       naive vs optimized suite and reports
 
 ## Roadmap
 
-- **Natural-language input without an LLM.** Classic NLP (normalization, schema linking against table and column names and real values, pattern rules for numbers, dates, comparisons and rankings) turns questions into NQL. Jev resolves only what stays ambiguous, by choosing among schema-derived candidates, and asks for confirmation when unsure.
+- More Jev decisions: aggregate choice ("rated above 3": average, any or every review), ambiguous values, thresholds; switch to the runner-up reading with one key.
 - Two-stage rankings in NQL; late Fetch past SemanticFilter.
 - Retrieval (full-text search, embeddings) as an opt-in candidate pre-filter with stated recall.
 - Cost-based semantic planning, a persistent semantic cache, semantic indexes.

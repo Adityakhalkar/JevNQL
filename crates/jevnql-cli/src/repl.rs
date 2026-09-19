@@ -13,7 +13,7 @@ use serde_json::{Value, json};
 
 use crate::ask;
 use crate::ui::Ui;
-use crate::{Request, handle};
+use crate::{Request, backend_price, handle, live_backend};
 
 type Error = Box<dyn std::error::Error>;
 
@@ -62,7 +62,8 @@ async fn interactive(engine: &mut Engine, optimize: bool) -> Result<(), Error> {
     loading.finish_and_clear();
 
     let backend = engine.backend_name().unwrap_or("none").to_string();
-    engine.session_mut().set_progress(Some(ui.progress_hook()));
+    let (live, price) = (live_backend(engine), backend_price(engine));
+    engine.session_mut().set_progress(Some(ui.progress_hook(live, price)));
     let table_sizes: Vec<(String, usize)> = profiles.iter().map(|p| (p.name.clone(), p.rows)).collect();
     ui.banner(&table_sizes, &backend);
 
@@ -170,7 +171,7 @@ pub async fn answer(
     explain_only: bool,
     optimize: bool,
 ) -> Option<Value> {
-    let asked = match ask::compile(engine, vocab, question) {
+    let asked = match ask::compile(engine, vocab, question).await {
         Ok(a) => a,
         Err(e) => {
             ui.ask_error(&e);
@@ -234,7 +235,7 @@ async fn plain(engine: &Engine, optimize: bool) -> Result<(), Error> {
         }
         let (explain_only, question) = explain_prefix(&std::mem::take(&mut buffer));
         println!("\nJevNQL > {}", question.trim());
-        match ask::compile(engine, &vocab, question.trim_end_matches(';')) {
+        match ask::compile(engine, &vocab, question.trim_end_matches(';')).await {
             Err(e) => eprintln!("error: {}", e.message),
             Ok(asked) => {
                 if let Some(notes) = &asked.notes {

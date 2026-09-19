@@ -73,6 +73,40 @@ pub struct Engine {
     session: Session,
 }
 
+/// A plain-English question turned into NQL.
+pub struct Interpretation {
+    pub translation: jev_nl::Translation,
+    /// Phrases whose meaning the semantic backend decided (one request).
+    pub decided: usize,
+    pub input_tokens: u64,
+    /// Set when the backend could not be reached and defaults were used.
+    pub error: Option<String>,
+}
+
+/// Compact description of the data for interpretation requests.
+fn schema_summary(vocab: &jev_nl::Vocabulary) -> String {
+    let mut lines = Vec::new();
+    for t in &vocab.tables {
+        let cols: Vec<String> = t
+            .columns
+            .iter()
+            .map(|c| match c.values.len() {
+                0 => c.name.clone(),
+                _ => format!("{} ({})", c.name, c.values.iter().take(8).cloned().collect::<Vec<_>>().join("|")),
+            })
+            .collect();
+        lines.push(format!("{}: {}", t.name, cols.join(", ")));
+    }
+    for r in &vocab.relations {
+        lines.push(format!("each {} row belongs to one {} via {}", jev_nl_singular(&r.child), jev_nl_singular(&r.parent), r.key));
+    }
+    lines.join("\n")
+}
+
+fn jev_nl_singular(table: &str) -> String {
+    table.strip_suffix('s').unwrap_or(table).to_string()
+}
+
 impl Engine {
     /// Opens an engine over `.csv` / `.parquet` files (one table per file).
     pub async fn open(files: &[impl AsRef<Path>], backend: Option<Arc<dyn SemanticBackend>>) -> Result<Self, ExecError> {
@@ -140,17 +174,81 @@ impl Engine {
                 let child_schema = self.session.table_schema(child).expect("registered");
                 for key in parent_schema.names().into_iter().filter(|k| k.ends_with("_id") && child_schema.contains(k)) {
                     if self.session.is_unique(parent, key).await? && !self.session.is_unique(child, key).await? {
+                        let child_table = tables.iter().find(|t: &&Table| t.name == *child).expect("built above");
+                        let sum_percentiles = match jev_nl::money_column(child_table) {
+                            Some(money) => Some((money.name.clone(), self.session.sum_percentiles(child, key, &money.name).await?)),
+                            None => None,
+                        };
                         relations.push(Relation {
                             parent: parent.clone(),
                             child: child.clone(),
                             key: key.to_string(),
                             count_percentiles: self.session.count_percentiles(child, key).await?,
+                            sum_percentiles,
                         });
                     }
                 }
             }
         }
         Ok(jev_nl::Vocabulary { tables, relations })
+    }
+
+    /// Turns a plain-English question into NQL. Phrases the rules can't settle
+    /// are decided by the semantic backend, all in one request (one typed
+    /// Choice per phrase, over the question and a schema summary). Without a
+    /// backend, or if the request fails, the default readings are used.
+    pub async fn interpret(
+        &self,
+        question: &str,
+        vocab: &jev_nl::Vocabulary,
+        today: (i32, u32, u32),
+    ) -> Result<Interpretation, jev_nl::NlError> {
+        let analysis = jev_nl::analyze(question, vocab, today)?;
+        let decisions = analysis.decisions.clone();
+        let Some(backend) = self.session.semantic_backend().filter(|_| !decisions.is_empty()) else {
+            return Ok(Interpretation { translation: analysis.resolve(&[]), decided: 0, input_tokens: 0, error: None });
+        };
+        let request = jev_provider::SemanticRequest {
+            state: serde_json::json!({ "question": question, "data": schema_summary(vocab) }),
+            questions: decisions
+                .iter()
+                .enumerate()
+                .map(|(i, d)| {
+                    let options = d
+                        .options
+                        .iter()
+                        .map(|o| jev_provider::ChoiceOption { label: o.label.clone(), description: Some(o.description.clone()) })
+                        .collect();
+                    (format!("d{i}"), jev_provider::Question::Choice { instructions: d.question.clone(), options })
+                })
+                .collect(),
+        };
+        match backend.evaluate(&request).await {
+            Ok(response) => {
+                let chosen: Vec<jev_nl::Chosen> = decisions
+                    .iter()
+                    .enumerate()
+                    .map(|(i, d)| match response.answers.get(&format!("d{i}")) {
+                        Some(jev_provider::Answer::Choice { label, confidence, probabilities }) => {
+                            let index = |l: &str| d.options.iter().position(|o| o.label == l);
+                            jev_nl::Chosen {
+                                option: index(label).unwrap_or(0),
+                                confidence: Some(*confidence),
+                                runner_up: probabilities.iter().find(|(l, _)| l != label).and_then(|(l, p)| Some((index(l)?, *p))),
+                            }
+                        }
+                        _ => jev_nl::Chosen { option: 0, confidence: None, runner_up: None },
+                    })
+                    .collect();
+                Ok(Interpretation {
+                    translation: analysis.resolve(&chosen),
+                    decided: decisions.len(),
+                    input_tokens: response.input_tokens,
+                    error: None,
+                })
+            }
+            Err(e) => Ok(Interpretation { translation: analysis.resolve(&[]), decided: 0, input_tokens: 0, error: Some(e.to_string()) }),
+        }
     }
 
     /// Decodes and type-checks a logical JevIR plan document.

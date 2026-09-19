@@ -61,9 +61,14 @@ fn words(text: &str) -> Vec<String> {
     text.to_lowercase().split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).map(String::from).collect()
 }
 
-/// Free-text strings in a state, in document order (dates and numbers skipped).
+/// Free-text strings in a state, in document order (dates and numbers
+/// skipped). A multi-line string is a compact table: its header line is
+/// skipped and each record line is one document.
 fn texts(v: &Value, out: &mut Vec<String>) {
     match v {
+        Value::String(s) if s.contains('\n') => {
+            out.extend(s.lines().skip(1).filter(|l| l.chars().any(char::is_alphabetic)).map(str::to_lowercase));
+        }
         Value::String(s) if s.chars().any(char::is_alphabetic) => out.push(s.to_lowercase()),
         Value::Array(a) => a.iter().for_each(|x| texts(x, out)),
         Value::Object(o) => o.values().for_each(|x| texts(x, out)),
@@ -176,19 +181,19 @@ impl SemanticBackend for SimulatedBackend {
                         }
                         Question::Choice { instructions, options } => {
                             question_chars += instructions.len();
-                            let best = options
+                            let scores: Vec<(String, f64)> = options
                                 .iter()
                                 .map(|o| {
                                     let text = format!("{} {}", o.label, o.description.as_deref().unwrap_or_default());
-                                    (strength(&text, &request.state), o)
+                                    (o.label.clone(), strength(&text, &request.state) + 1e-3)
                                 })
-                                .fold(None::<(f64, &crate::ChoiceOption)>, |best, (s, o)| match best {
-                                    Some((b, _)) if b >= s => best,
-                                    _ => Some((s, o)),
-                                })
-                                .map(|(_, o)| o.label.clone())
-                                .unwrap_or_default();
-                            Answer::Choice { label: best, confidence: 0.5 }
+                                .collect();
+                            let total: f64 = scores.iter().map(|(_, s)| s).sum();
+                            let mut probabilities: Vec<(String, f64)> = scores.into_iter().map(|(l, s)| (l, s / total)).collect();
+                            // stable: ties keep option order
+                            probabilities.sort_by(|x, y| y.1.total_cmp(&x.1));
+                            let label = probabilities.first().map(|(l, _)| l.clone()).unwrap_or_default();
+                            Answer::Choice { label, confidence: 0.5, probabilities }
                         }
                     };
                     (id.clone(), answer)

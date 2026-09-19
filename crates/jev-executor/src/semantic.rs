@@ -104,17 +104,15 @@ impl SemanticRuntime<'_> {
             }
         }
 
-        let emit = |event: Progress| {
-            if let Some(hook) = self.progress {
-                hook(&event);
-            }
-        };
+        let emit = |event: Progress| self.progress.is_none_or(|hook| hook(&event));
         let label = exec.ops.iter().map(|op| match op {
             SemanticOp::Filter { .. } => "filter".to_string(),
             SemanticOp::Score { output, .. } => format!("score {output}"),
             SemanticOp::Choice { output, .. } => format!("classify {output}"),
         });
-        emit(Progress::SemanticStart { label: label.collect::<Vec<_>>().join(" + "), rows, requests: pending.len() });
+        if !emit(Progress::SemanticStart { label: label.collect::<Vec<_>>().join(" + "), rows, requests: pending.len() }) {
+            return Err(ExecError::Cancelled);
+        }
         let mut stream = futures::stream::iter(pending.into_iter().map(|(si, missing)| {
             let request = SemanticRequest {
                 state: serde_json::from_str(distinct[si]).expect("states are serialized JSON"),
@@ -233,5 +231,50 @@ fn row_states(batch: &RecordBatch, context: &[String]) -> Result<Vec<String>, Ex
     }
     let rows: Vec<Map<String, Value>> =
         serde_json::from_slice(&bytes).map_err(|e| ExecError::Internal(format!("row serialization: {e}")))?;
-    Ok(rows.into_iter().map(|r| Value::Object(r).to_string()).collect())
+    Ok(rows
+        .into_iter()
+        .map(|r| Value::Object(r.into_iter().map(|(k, v)| (k, compact(v))).collect()).to_string())
+        .collect())
+}
+
+/// Lists of records (fetched histories) become a small text table: the field
+/// names once, then one `a | b | c` line per record. The same content as JSON
+/// objects repeats every key per record and costs about a third more tokens.
+pub(crate) fn compact(value: Value) -> Value {
+    let Value::Array(items) = &value else { return value };
+    if items.is_empty() || !items.iter().all(Value::is_object) {
+        return value;
+    }
+    let mut fields: Vec<String> = Vec::new();
+    for item in items {
+        for key in item.as_object().expect("checked").keys() {
+            if !fields.contains(key) {
+                fields.push(key.clone());
+            }
+        }
+    }
+    let cell = |v: Option<&Value>| match v {
+        None | Some(Value::Null) => String::new(),
+        Some(Value::String(s)) => s.replace('\n', " "),
+        Some(other) => other.to_string(),
+    };
+    let mut lines = vec![fields.join(" | ")];
+    for item in items {
+        let obj = item.as_object().expect("checked");
+        lines.push(fields.iter().map(|f| cell(obj.get(f))).collect::<Vec<_>>().join(" | "));
+    }
+    Value::String(lines.join("\n"))
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    #[test]
+    fn histories_become_compact_tables() {
+        let v = json!([{"day": "2026-01-01", "text": "too pricey"}, {"day": "2026-02-01", "rating": 2}]);
+        assert_eq!(super::compact(v), json!("day | text | rating\n2026-01-01 | too pricey | \n2026-02-01 |  | 2"));
+        assert_eq!(super::compact(json!("plain")), json!("plain"));
+        assert_eq!(super::compact(json!([1, 2])), json!([1, 2]));
+    }
 }

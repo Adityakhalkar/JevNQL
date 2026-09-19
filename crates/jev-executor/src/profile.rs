@@ -163,3 +163,19 @@ impl Session {
         Ok(out)
     }
 }
+
+impl Session {
+    /// Percentiles (p25, p50, p75, p90) of the per-`key` total of `value`.
+    pub async fn sum_percentiles(&self, table: &str, key: &str, value: &str) -> Result<[f64; 4], ExecError> {
+        use datafusion::functions_aggregate::expr_fn::{approx_percentile_cont, sum};
+        use datafusion::prelude::lit;
+        let totals = self.context().table(table).await?.aggregate(vec![column(key)], vec![sum(column(value)).alias("t")])?;
+        let pct = |p: f64| approx_percentile_cont(column("t").sort(true, false), lit(p), None).alias(format!("p{p}"));
+        let batches = totals.aggregate(vec![], vec![pct(0.25), pct(0.5), pct(0.75), pct(0.9)])?.collect().await?;
+        let mut out = [0.0; 4];
+        for (i, slot) in out.iter_mut().enumerate() {
+            *slot = values(&batches, i)?.pop().and_then(|v| v.parse().ok()).unwrap_or(0.0);
+        }
+        Ok(out)
+    }
+}

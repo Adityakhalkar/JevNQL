@@ -2302,6 +2302,7 @@ dependencies = [
  "jev-optimizer",
  "jev-provider",
  "jevir",
+ "serde_json",
 ]
 
 [[package]]

@@ -12,6 +12,14 @@ use serde_json::{Value, json};
 /// All non-date string values anywhere in a state.
 fn texts(v: &Value, out: &mut Vec<String>) {
     match v {
+        // compact history table: skip the header, one record per line
+        Value::String(s) if s.contains('\n') => {
+            for line in s.lines().skip(1) {
+                for part in line.split(" | ").filter(|p| !p.starts_with(|c: char| c.is_ascii_digit()) && !p.is_empty()) {
+                    out.push(part.to_lowercase());
+                }
+            }
+        }
         Value::String(s) if !s.starts_with(|c: char| c.is_ascii_digit()) => out.push(s.to_lowercase()),
         Value::Array(a) => a.iter().for_each(|x| texts(x, out)),
         Value::Object(o) => o.values().for_each(|x| texts(x, out)),
@@ -36,7 +44,7 @@ fn mock() -> Arc<MockBackend> {
             }
             Question::Choice { options, .. } => {
                 let label = &options[usize::from(all.iter().any(|t| t == "smb"))].label;
-                Answer::Choice { label: label.clone(), confidence: 0.9 }
+                Answer::Choice { label: label.clone(), confidence: 0.9, probabilities: vec![(label.clone(), 1.0)] }
             }
         }
     }))

@@ -73,10 +73,15 @@ impl Ui {
                 Some((l, r)) => {
                     let l = truncate_str(l.trim().trim_matches('"'), left, "…");
                     let pad = left.saturating_sub(measure_text_width(&l));
+                    let (r, tag) = match r.split_once("  [Jev ") {
+                        Some((body, tag)) => (body, format!("  {}", style(format!("Jev chose · {}", tag.trim_end_matches(']'))).magenta().dim())),
+                        None => (r, String::new()),
+                    };
                     let r = match r.strip_prefix("judgment for Jev: ") {
-                        Some(q) => format!("{} {}", style("Jev").magenta().bold(), style(q).italic()),
+                        Some(q) => format!("{} {}", style("Jev judges").magenta().bold(), style(q).italic()),
                         None => r.to_string(),
                     };
+                    let r = format!("{r}{tag}");
                     println!("  {}{}  {r}", style(l).yellow(), " ".repeat(pad));
                 }
                 None => println!("  {}", dim(note.trim())),
@@ -116,29 +121,51 @@ impl Ui {
         }
     }
 
-    /// Starts the live activity line; the returned hook drives it.
-    pub fn progress_hook(&self) -> ProgressHook {
+    /// Drives the live activity line. For live backends, a semantic batch of
+    /// more than `CONFIRM_REQUESTS` requests waits for confirmation first.
+    pub fn progress_hook(&self, live: bool, usd_per_million_tokens: f64) -> ProgressHook {
         let slot = self.activity.clone();
+        let can_ask = live && std::io::IsTerminal::is_terminal(&std::io::stdin());
         Arc::new(move |event: &Progress| {
             let guard = slot.lock().expect("activity lock");
-            let Some(bar) = guard.as_ref() else { return };
+            let Some(bar) = guard.as_ref() else { return true };
             match event {
-                Progress::SemanticStart { label, rows, requests } => {
-                    bar.set_style(
-                        ProgressStyle::with_template("{spinner:.magenta} {msg}  {bar:28.magenta/dim} {pos}/{len}")
-                            .expect("template")
-                            .progress_chars("█▓░"),
+                Progress::SemanticStart { rows, requests, .. } if can_ask && *requests > CONFIRM_REQUESTS => {
+                    let tokens = *requests as f64 * TOKENS_PER_REQUEST;
+                    let question = format!(
+                        "{} Jev will judge {} rows: {} requests, ~{:.1}M tokens, ~${:.3}, ~{}. Continue? [Y/n] ",
+                        style("?").yellow().bold(),
+                        compact(*rows),
+                        compact(*requests),
+                        tokens / 1e6,
+                        tokens * usd_per_million_tokens / 1e6,
+                        duration(*requests as f64 / REQUESTS_PER_SECOND),
                     );
-                    bar.set_length(*requests as u64);
-                    bar.set_position(0);
-                    bar.set_message(format!("{} {label} · {} rows", style("Jev").magenta().bold(), compact(*rows)));
+                    let yes = bar.suspend(|| {
+                        print!("{question}");
+                        let _ = std::io::Write::flush(&mut std::io::stdout());
+                        let mut answer = String::new();
+                        // no answer (end of input, read error) never spends money
+                        match std::io::stdin().read_line(&mut answer) {
+                            Ok(0) | Err(_) => false,
+                            Ok(_) => !answer.trim().to_lowercase().starts_with('n'),
+                        }
+                    });
+                    if !yes {
+                        return false;
+                    }
+                    if let Progress::SemanticStart { label, rows, requests } = event {
+                        start_bar(bar, label, *rows, *requests);
+                    }
                 }
+                Progress::SemanticStart { label, rows, requests } => start_bar(bar, label, *rows, *requests),
                 Progress::SemanticAdvance { done } => bar.set_position(*done as u64),
                 Progress::SemanticEnd => {
                     bar.set_style(spinner());
                     bar.set_message(style("DataFusion").blue().to_string());
                 }
             }
+            true
         })
     }
 
@@ -260,6 +287,28 @@ impl Ui {
 
     pub fn prompt(&self) -> String {
         format!("{} ", Style::new().cyan().bold().apply_to("❯"))
+    }
+}
+
+/// Ask before sending a live batch larger than this.
+const CONFIRM_REQUESTS: usize = 1_000;
+/// Rough per-request figures for the estimate (observed on Jev).
+const TOKENS_PER_REQUEST: f64 = 450.0;
+const REQUESTS_PER_SECOND: f64 = 35.0;
+
+fn start_bar(bar: &ProgressBar, label: &str, rows: usize, requests: usize) {
+    bar.set_style(
+        ProgressStyle::with_template("{spinner:.magenta} {msg}  {bar:28.magenta/dim} {pos}/{len}").expect("template").progress_chars("█▓░"),
+    );
+    bar.set_length(requests as u64);
+    bar.set_position(0);
+    bar.set_message(format!("{} {label} · {} rows", style("Jev").magenta().bold(), compact(rows)));
+}
+
+fn duration(secs: f64) -> String {
+    match secs {
+        s if s < 60.0 => format!("{s:.0} s"),
+        s => format!("{:.0} min", (s / 60.0).ceil()),
     }
 }
 

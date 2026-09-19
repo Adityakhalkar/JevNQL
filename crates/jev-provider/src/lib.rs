@@ -43,7 +43,8 @@ pub enum Answer {
     Noul { probability: f64 },
     /// `value` is normalized to [0, 1]: 0 = first level, 1 = last level.
     Score { value: f64, confidence: f64 },
-    Choice { label: String, confidence: f64 },
+    /// `probabilities` lists every option, most likely first.
+    Choice { label: String, confidence: f64, probabilities: Vec<(String, f64)> },
 }
 
 #[derive(Debug, Clone)]

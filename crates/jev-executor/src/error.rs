@@ -24,6 +24,8 @@ pub enum ExecError {
     SemanticBudget { rows: usize, max: usize },
     #[error("a semantic state is ~{tokens} tokens (limit {limit}); pass fewer context columns or limit fetched rows")]
     StateTooLarge { tokens: usize, limit: usize },
+    #[error("cancelled before sending anything to the semantic backend")]
+    Cancelled,
     /// JevIR and the execution engine disagree; always an engine bug.
     #[error("internal error: {0}")]
     Internal(String),

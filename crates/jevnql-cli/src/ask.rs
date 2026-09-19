@@ -36,13 +36,26 @@ mod tests {
     }
 }
 
-/// Plain English is translated to NQL first; NQL is compiled as written.
-pub fn compile(engine: &Engine, vocab: &jev_nl::Vocabulary, question: &str) -> Result<Asked, AskError> {
+/// Plain English is interpreted (Jev decides what the rules can't) and
+/// translated to NQL; NQL is compiled as written.
+pub async fn compile(engine: &Engine, vocab: &jev_nl::Vocabulary, question: &str) -> Result<Asked, AskError> {
     let (nql, notes) = match is_nql(question) {
         true => (question.to_string(), None),
         false => {
-            let t = jev_nl::translate(question, vocab, today()).map_err(|e| AskError { message: e.to_string(), nql: None })?;
-            (t.nql, Some(t.notes))
+            let i = engine.interpret(question, vocab, today()).await.map_err(|e| AskError { message: e.to_string(), nql: None })?;
+            let mut notes = i.translation.notes;
+            if i.decided > 0 {
+                notes.push(format!(
+                    "Jev decided {} phrase{} · 1 request · {} tokens",
+                    i.decided,
+                    if i.decided == 1 { "" } else { "s" },
+                    i.input_tokens
+                ));
+            }
+            if let Some(e) = i.error {
+                notes.push(format!("Jev unavailable, used default readings ({e})"));
+            }
+            (i.translation.nql, Some(notes))
         }
     };
     match jev_nql::compile(&nql, engine.session()) {

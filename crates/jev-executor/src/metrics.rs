@@ -11,7 +11,8 @@ pub enum Progress {
     SemanticEnd,
 }
 
-pub type ProgressHook = Arc<dyn Fn(&Progress) + Send + Sync>;
+/// Returns `false` on `SemanticStart` to cancel the batch before any request.
+pub type ProgressHook = Arc<dyn Fn(&Progress) -> bool + Send + Sync>;
 
 /// Execution metrics reported with every result.
 #[derive(Debug, Clone, Default)]

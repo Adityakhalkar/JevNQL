@@ -63,7 +63,14 @@ fn decodes_documented_answers_and_normalizes_scores() {
     let r = parse_response(&request(), &body).unwrap();
     assert_eq!(r.input_tokens, 312);
     assert_eq!(r.answers["is_urgent"], Answer::Noul { probability: 0.92 });
-    assert_eq!(r.answers["department"], Answer::Choice { label: "technical".into(), confidence: 0.82 });
+    assert_eq!(
+        r.answers["department"],
+        Answer::Choice {
+            label: "technical".into(),
+            confidence: 0.82,
+            probabilities: vec![("technical".into(), 0.85), ("billing".into(), 0.15)],
+        }
+    );
     assert_eq!(r.answers["frustration"], Answer::Score { value: 0.8, confidence: 0.78 });
 }
 

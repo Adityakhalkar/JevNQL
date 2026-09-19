@@ -11,3 +11,4 @@ jev-executor = { path = "../jev-executor" }
 jev-optimizer = { path = "../jev-optimizer" }
 jev-provider = { path = "../jev-provider" }
 jev-nl = { path = "../jev-nl" }
+serde_json.workspace = true

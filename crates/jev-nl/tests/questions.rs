@@ -16,6 +16,7 @@ fn vocabulary() -> Vocabulary {
         child: child.into(),
         key: "customer_id".into(),
         count_percentiles: p,
+        sum_percentiles: (child == "orders").then(|| ("amount".to_string(), [100.0, 500.0, 2000.0, 8000.0])),
     };
     Vocabulary {
         tables: vec![
@@ -198,4 +199,47 @@ fn unplaceable_comparisons_are_errors() {
 fn unknown_subject_is_reported() {
     let err = translate("hello world", &vocabulary(), TODAY);
     assert!(err.is_err_and(|e| e.0.contains("customers, orders, reviews, tickets")));
+}
+
+fn choose(label: &str, question: &str) -> String {
+    let vocab = vocabulary();
+    let a = jev_nl::analyze(question, &vocab, TODAY).unwrap();
+    assert_eq!(a.decisions.len(), 1, "one open decision expected for {question}");
+    let option = a.decisions[0].options.iter().position(|o| o.label == label).unwrap_or_else(|| {
+        panic!("no option {label}: {:?}", a.decisions[0].options.iter().map(|o| &o.label).collect::<Vec<_>>())
+    });
+    let t = a.resolve(&[jev_nl::Chosen { option, confidence: Some(0.9), runner_up: None }]);
+    jev_nql::compile(&t.nql, &catalog()).unwrap_or_else(|e| panic!("invalid NQL ({e}):\n{}", t.nql));
+    t.nql
+}
+
+#[test]
+fn unexplained_phrases_become_decisions_with_fact_and_judgment_readings() {
+    let vocab = vocabulary();
+    let a = jev_nl::analyze("customers whose spending show they are frequent spenders", &vocab, TODAY).unwrap();
+    let labels: Vec<&str> = a.decisions[0].options.iter().map(|o| o.label.as_str()).collect();
+    assert_eq!(
+        labels,
+        ["judge_all", "judge_reviews", "judge_tickets", "many_orders", "high_total_amount", "many_reviews", "many_tickets"]
+    );
+    // picking the fact: exact, no judgment, no spend ranking
+    let q = choose("many_orders", "customers whose spending show they are frequent spenders");
+    has(&q, &["WITH orders AS order_count (COUNT)", "order_count >= 58"]);
+    assert!(!q.contains('"') && !q.contains("RANK BY spend"), "{q}");
+    let q = choose("high_total_amount", "customers whose spending show they are frequent spenders");
+    has(&q, &["WITH orders AS spend (SUM amount)", "spend >= 2000.00"]);
+}
+
+#[test]
+fn chosen_evidence_limits_what_is_fetched() {
+    let q = choose("judge_reviews", "customers who sound like they're leaving");
+    has(&q, &["WITH reviews AS review_history", "USING review_history"]);
+    assert!(!q.contains("ticket_history"), "tickets not needed:\n{q}");
+}
+
+#[test]
+fn single_reading_needs_no_decision() {
+    let vocab = vocabulary();
+    assert!(jev_nl::analyze("open tickets that sound urgent", &vocab, TODAY).unwrap().decisions.is_empty());
+    assert!(jev_nl::analyze("top 10 customers with the most reviews", &vocab, TODAY).unwrap().decisions.is_empty());
 }
