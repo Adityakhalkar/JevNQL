@@ -3,6 +3,10 @@ use std::time::Duration;
 /// Execution metrics reported with every result.
 #[derive(Debug, Clone, Default)]
 pub struct ExecMetrics {
+    /// Rows read from base tables by DataFusion.
+    pub rows_scanned: usize,
+    /// JevBatchExec operators executed.
+    pub semantic_batches: usize,
     /// Rows fed into semantic operators.
     pub semantic_rows: usize,
     /// Distinct context states among those rows.

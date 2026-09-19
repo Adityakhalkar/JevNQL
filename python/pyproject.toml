@@ -5,6 +5,9 @@ description = "JevNQL natural-language compiler: questions -> logical JevIR for 
 requires-python = ">=3.10"
 dependencies = ["anthropic>=0.70"]
 
+[project.scripts]
+jevnql = "jevnql.cli:main"
+
 [dependency-groups]
 dev = ["pytest>=8"]
 

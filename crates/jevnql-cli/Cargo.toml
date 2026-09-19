@@ -5,7 +5,7 @@ edition.workspace = true
 description = "JevNQL command-line interface"
 
 [[bin]]
-name = "jevnql"
+name = "jevnql-engine"
 path = "src/main.rs"
 
 [dependencies]
@@ -14,3 +14,5 @@ jevir = { path = "../jevir" }
 clap = { version = "4", features = ["derive"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 serde_json.workspace = true
+serde.workspace = true
+datafusion = "55.1"

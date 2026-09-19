@@ -61,6 +61,8 @@ async fn example_plan_runs_hybrid() {
     let m = &result.metrics;
     assert_eq!((m.semantic_rows, m.distinct_states, m.requests, m.cache_hits), (3, 3, 3, 0));
     assert!(m.input_tokens > 0 && m.estimated_cost_usd > 0.0);
+    // 7 orders + 6 reviews read; one semantic batch
+    assert_eq!((m.rows_scanned, m.semantic_batches), (13, 1));
 }
 
 #[tokio::test]

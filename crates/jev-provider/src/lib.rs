@@ -16,6 +16,7 @@ use serde_json::Value;
 use thiserror::Error;
 
 pub mod mock;
+pub mod simulated;
 pub mod typesafe;
 
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;

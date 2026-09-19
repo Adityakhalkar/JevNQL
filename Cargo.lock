@@ -2198,8 +2198,10 @@ name = "jevnql-cli"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "datafusion",
  "jevir",
  "jevnql-core",
+ "serde",
  "serde_json",
  "tokio",
 ]
@@ -2209,6 +2211,8 @@ name = "jevnql-core"
 version = "0.1.0"
 dependencies = [
  "jev-executor",
+ "jev-optimizer",
+ "jev-provider",
  "jevir",
 ]
 

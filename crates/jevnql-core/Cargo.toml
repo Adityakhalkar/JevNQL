@@ -7,3 +7,5 @@ description = "JevNQL engine API: data registration, plan validation, optimizati
 [dependencies]
 jevir = { path = "../jevir" }
 jev-executor = { path = "../jev-executor" }
+jev-optimizer = { path = "../jev-optimizer" }
+jev-provider = { path = "../jev-provider" }

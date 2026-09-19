@@ -8,6 +8,7 @@ use std::time::Instant;
 use datafusion::arrow::array::RecordBatch;
 use datafusion::arrow::compute::concat_batches;
 use datafusion::arrow::util::pretty::pretty_format_batches;
+use datafusion::physical_plan::{ExecutionPlan, collect};
 use datafusion::prelude::{CsvReadOptions, ParquetReadOptions, SessionContext};
 use jevir::logical::Op;
 use jev_provider::{BoxFuture, SemanticBackend};
@@ -159,14 +160,17 @@ impl Session {
                     let input = self.run(&exec.input, metrics).await?;
                     let backend = self.semantic.as_deref().ok_or(ExecError::NoSemanticBackend)?;
                     let runtime = SemanticRuntime { backend, cache: &self.cache, max_rows: self.max_semantic_rows };
+                    metrics.semantic_batches += 1;
                     let batch = runtime.evaluate(exec, input.batch, metrics).await?;
                     // semantic operators preserve row order
                     Ok(Materialized { batch, ordering: input.ordering })
                 }
                 PhysicalPlan::DataFusion(exec) => {
                     let mut materialized = HashMap::new();
+                    let mut materialized_rows = 0;
                     for input in &exec.inputs {
                         let done = self.run(&input.exec, metrics).await?;
+                        materialized_rows += done.batch.num_rows();
                         let df = self.ctx.read_batch(done.batch)?;
                         materialized.insert(Arc::as_ptr(&input.node) as usize, Lowered { df, ordering: done.ordering });
                     }
@@ -178,7 +182,10 @@ impl Session {
                     let lowered = Lowerer { ctx: &self.ctx, tables: &tables, materialized: &materialized }
                         .lower_root(&exec.plan)?;
                     let schema = Arc::new(lowered.df.schema().as_arrow().clone());
-                    let batches = lowered.df.collect().await?;
+                    let physical = lowered.df.create_physical_plan().await?;
+                    let batches = collect(physical.clone(), self.ctx.task_ctx()).await?;
+                    // leaf operators read base tables plus the materialized semantic results
+                    metrics.rows_scanned += leaf_rows(&physical).saturating_sub(materialized_rows);
                     let batch = match batches.first() {
                         Some(first) => concat_batches(&first.schema(), &batches)?,
                         None => RecordBatch::new_empty(schema),
@@ -203,6 +210,14 @@ impl Catalog for Session {
 
     fn table_names(&self) -> Vec<String> {
         self.tables.table_names()
+    }
+}
+
+/// Rows produced by the leaf (scan) operators of an executed DataFusion plan.
+fn leaf_rows(plan: &Arc<dyn ExecutionPlan>) -> usize {
+    match plan.children().as_slice() {
+        [] => plan.metrics().and_then(|m| m.output_rows()).unwrap_or(0),
+        children => children.iter().map(|c| leaf_rows(c)).sum(),
     }
 }
 
