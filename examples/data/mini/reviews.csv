@@ -1,0 +1,7 @@
+review_id,customer_id,rating,text,created_at
+1,1,4,Great product,2026-01-05
+2,1,2,"Price went up again, not happy",2026-03-01
+3,2,5,Love it,2026-02-02
+4,2,1,Too expensive now,2026-04-10
+5,2,3,Okay but pricey,2026-03-15
+6,3,5,Excellent,2026-01-20

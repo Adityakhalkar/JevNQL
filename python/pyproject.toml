@@ -1,0 +1,19 @@
+[project]
+name = "jevnql"
+version = "0.1.0"
+description = "JevNQL natural-language compiler: questions -> logical JevIR for the Rust engine"
+requires-python = ">=3.10"
+dependencies = ["anthropic>=0.70"]
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["jevnql"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

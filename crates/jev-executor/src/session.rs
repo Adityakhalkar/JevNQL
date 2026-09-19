@@ -76,6 +76,10 @@ impl Session {
         self.semantic.as_deref()
     }
 
+    pub(crate) fn context(&self) -> &SessionContext {
+        &self.ctx
+    }
+
     /// Caps the rows any single semantic operator may send to the backend.
     pub fn set_max_semantic_rows(&mut self, max: usize) {
         self.max_semantic_rows = max;
