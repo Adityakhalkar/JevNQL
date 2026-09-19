@@ -2,6 +2,11 @@
 
 **JevNQL compiles data questions into optimized deterministic and semantic query plans.**
 
+<p align="center">
+  <a href="docs/demo.mp4"><img src="docs/demo.gif" alt="JevNQL answering a plain-English question: interpretation, cost confirmation, live Jev progress and results" width="900"></a>
+  <br><sub>Click for the full-quality video.</sub>
+</p>
+
 Query languages operate on *values*: `WHERE revenue > 10000`. Real questions often operate on *meaning*:
 
 > Find the customers who spent the most this year and seem increasingly unhappy with our pricing.
@@ -78,12 +83,20 @@ The query is written in reading order: fetch every history, score everyone, then
 
 ## Quickstart
 
-Requirements: Rust ≥ 1.88. Python 3 (standard library only) is used by the data generator and the benchmark script.
+Requirements: [Rust](https://rustup.rs) ≥ 1.88. Python 3 (standard library only) is used by the data generator and the benchmark script.
 
 ```bash
+git clone https://github.com/Adityakhalkar/JevNQL && cd JevNQL
 cargo build --release -p jevnql-cli             # first build takes a few minutes
 python3 examples/generate.py                    # synthetic data -> examples/data/demo/
-target/release/jevnql examples/data/demo/*.csv  # the NQL shell
+target/release/jevnql examples/data/demo/*.csv  # the shell
+```
+
+To install just the `jevnql` command for your own CSV or Parquet files:
+
+```bash
+cargo install --git https://github.com/Adityakhalkar/JevNQL jevnql-cli
+jevnql path/to/*.csv
 ```
 
 ```text
