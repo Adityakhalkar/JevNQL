@@ -110,3 +110,56 @@ impl Session {
         Ok(TableProfile { name: table.to_string(), rows, columns })
     }
 }
+
+/// Distinct values of text columns with at most this many values are listed
+/// (used to recognize values such as `enterprise` in questions).
+pub const MAX_LISTED_VALUES: usize = 50;
+
+impl Session {
+    /// For each low-cardinality text column: its distinct values.
+    pub async fn listed_values(&self, table: &str) -> Result<Vec<(String, Vec<String>)>, ExecError> {
+        let schema = jevir::Catalog::table_schema(self, table)
+            .ok_or_else(|| ExecError::Register { path: table.into(), reason: "no such table".into() })?;
+        let df = self.context().table(table).await?;
+        let mut out = Vec::new();
+        for field in schema.fields().iter().filter(|f| f.data_type == DataType::Utf8) {
+            let batches = df
+                .clone()
+                .select(vec![column(&field.name)])?
+                .distinct()?
+                .limit(0, Some(MAX_LISTED_VALUES + 1))?
+                .collect()
+                .await?;
+            let values = values(&batches, 0)?;
+            if values.len() <= MAX_LISTED_VALUES {
+                out.push((field.name.clone(), values));
+            }
+        }
+        Ok(out)
+    }
+
+    /// Whether `column` has a distinct value in every row of `table`.
+    pub async fn is_unique(&self, table: &str, column_name: &str) -> Result<bool, ExecError> {
+        use datafusion::functions_aggregate::expr_fn::count_distinct;
+        let df = self.context().table(table).await?;
+        let rows = df.clone().count().await?;
+        let batches = df.aggregate(vec![], vec![count_distinct(column(column_name)).alias("n")])?.collect().await?;
+        Ok(values(&batches, 0)?.pop().and_then(|v| v.parse::<usize>().ok()) == Some(rows))
+    }
+
+    /// Percentiles (p25, p50, p75, p90) of the number of `table` rows per
+    /// `key` value, over keys that have at least one row.
+    pub async fn count_percentiles(&self, table: &str, key: &str) -> Result<[f64; 4], ExecError> {
+        use datafusion::functions_aggregate::count::count_all;
+        use datafusion::functions_aggregate::expr_fn::approx_percentile_cont;
+        use datafusion::prelude::lit;
+        let counts = self.context().table(table).await?.aggregate(vec![column(key)], vec![count_all().alias("n")])?;
+        let pct = |p: f64| approx_percentile_cont(column("n").sort(true, false), lit(p), None).alias(format!("p{p}"));
+        let batches = counts.aggregate(vec![], vec![pct(0.25), pct(0.5), pct(0.75), pct(0.9)])?.collect().await?;
+        let mut out = [0.0; 4];
+        for (i, slot) in out.iter_mut().enumerate() {
+            *slot = values(&batches, i)?.pop().and_then(|v| v.parse().ok()).unwrap_or(0.0);
+        }
+        Ok(out)
+    }
+}

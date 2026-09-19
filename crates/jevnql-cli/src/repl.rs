@@ -9,7 +9,10 @@ use serde_json::{Value, json};
 use crate::{Request, handle};
 
 const HELP: &str = "\
-  Queries end with `;` or a blank line. Prefix with EXPLAIN to see plans without running.
+  Ask in plain English, or write NQL (starts with FROM). Queries end with `;`
+  or a blank line. Prefix with EXPLAIN to see plans without running.
+
+    enterprise customers with many orders who sound like they're leaving
 
     FROM customers
     WITH reviews AS history (LAST 30 BY created_at)
@@ -24,6 +27,7 @@ pub async fn run(engine: &Engine, optimize: bool) -> Result<(), Box<dyn std::err
     let backend = engine.backend_name().unwrap_or("none");
     println!("JevNQL — semantic backend: {backend}. Type \\help for help.\n");
     tables(engine);
+    let vocab = engine.vocabulary().await?;
     let mut last_ir: Option<Value> = None;
     let mut buffer = String::new();
     let stdin = std::io::stdin();
@@ -68,15 +72,15 @@ pub async fn run(engine: &Engine, optimize: bool) -> Result<(), Box<dyn std::err
             Some(head) if head.eq_ignore_ascii_case("EXPLAIN ") => (true, source.trim_start()[8..].to_string()),
             _ => (false, source),
         };
-        let compiled = match jev_nql::compile(&source, engine.session()) {
-            Ok(c) => c,
+        let document = match crate::ask::compile(engine, &vocab, &source) {
+            Ok(d) => d,
             Err(e) => {
                 eprintln!("error: {e}");
                 continue;
             }
         };
-        last_ir = Some(compiled.document.clone());
-        let out = handle(engine, Request::Run { plan: compiled.document, explain_only, optimize }).await;
+        last_ir = Some(document.clone());
+        let out = handle(engine, Request::Run { plan: document, explain_only, optimize }).await;
         match out["ok"] == json!(true) {
             true => println!("{}", out["text"].as_str().unwrap_or_default()),
             false => eprintln!("error: {}", out["error"].as_str().unwrap_or_default()),

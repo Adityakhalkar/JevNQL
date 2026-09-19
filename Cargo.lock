@@ -2166,6 +2166,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "jev-nl"
+version = "0.1.0"
+dependencies = [
+ "jev-nql",
+ "jevir",
+]
+
+[[package]]
 name = "jev-nql"
 version = "0.1.0"
 dependencies = [
@@ -2212,6 +2220,7 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "datafusion",
+ "jev-nl",
  "jev-nql",
  "jevir",
  "jevnql-core",
@@ -2225,6 +2234,7 @@ name = "jevnql-core"
 version = "0.1.0"
 dependencies = [
  "jev-executor",
+ "jev-nl",
  "jev-optimizer",
  "jev-provider",
  "jevir",

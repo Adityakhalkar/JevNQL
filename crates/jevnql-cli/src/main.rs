@@ -4,6 +4,7 @@
 //! `explain` / `run` take JevIR plans directly. `catalog`, `validate` and
 //! `serve` speak JSON for tools and future language bindings.
 
+mod ask;
 mod render;
 mod repl;
 
@@ -71,9 +72,9 @@ enum Command {
         #[arg(required = true)]
         files: Vec<PathBuf>,
     },
-    /// Run one NQL query: EXPLAIN, results and metrics.
+    /// Answer one question (plain English or NQL): EXPLAIN, results and metrics.
     Query {
-        /// The query text (or use --file).
+        /// The question or NQL query (or use --file).
         #[arg(short = 'e', long, conflicts_with = "file")]
         query: Option<String>,
         /// Read the query from a file.
@@ -215,18 +216,19 @@ async fn run(cli: Cli) -> Result<ExitCode, Error> {
                 (None, None) => return Err("give a query with -e or --file".into()),
             };
             let engine = open(&cli, files, !explain && !emit_ir).await?;
-            let compiled = match jev_nql::compile(&source, engine.session()) {
-                Ok(c) => c,
+            let vocab = engine.vocabulary().await?;
+            let document = match ask::compile(&engine, &vocab, &source) {
+                Ok(d) => d,
                 Err(e) => {
                     eprintln!("error: {e}");
                     return Ok(ExitCode::FAILURE);
                 }
             };
             if *emit_ir {
-                println!("{}", serde_json::to_string_pretty(&compiled.document)?);
+                println!("{}", serde_json::to_string_pretty(&document)?);
                 return Ok(ExitCode::SUCCESS);
             }
-            let out = handle(&engine, Request::Run { plan: compiled.document, explain_only: *explain, optimize: !no_optimize }).await;
+            let out = handle(&engine, Request::Run { plan: document, explain_only: *explain, optimize: !no_optimize }).await;
             match out["ok"] == json!(true) {
                 true => print!("{}", out["text"].as_str().unwrap_or_default()),
                 false => {

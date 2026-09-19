@@ -14,7 +14,7 @@ use jev_provider::simulated::SimulatedBackend;
 use jev_provider::typesafe::TypeSafeJevBackend;
 pub use jev_provider::{ProviderError, SemanticBackend};
 use jevir::physical::{PhysicalPlan, PhysicalQuery};
-use jevir::{Catalog, IrError, ValidatedPlan};
+use jevir::{Catalog, DataType, IrError, ValidatedPlan};
 
 /// Which semantic backend to run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -105,6 +105,52 @@ impl Engine {
             out.push(self.session.profile(&table).await?);
         }
         Ok(out)
+    }
+
+    /// What the natural-language translator needs to know about the data:
+    /// columns, low-cardinality values, and parent/child relations (a column
+    /// unique in one table and repeated in another) with count percentiles.
+    pub async fn vocabulary(&self) -> Result<jev_nl::Vocabulary, ExecError> {
+        use jev_nl::{Column, ColumnKind, Relation, Table};
+        let names = self.session.table_names();
+        let mut tables = Vec::new();
+        for name in &names {
+            let schema = self.session.table_schema(name).expect("registered");
+            let listed = self.session.listed_values(name).await?;
+            let columns = schema
+                .fields()
+                .iter()
+                .map(|f| Column {
+                    name: f.name.clone(),
+                    kind: match &f.data_type {
+                        DataType::Utf8 => ColumnKind::Text,
+                        t if t.is_numeric() => ColumnKind::Number,
+                        t if t.is_temporal() => ColumnKind::Date,
+                        _ => ColumnKind::Other,
+                    },
+                    values: listed.iter().find(|(c, _)| *c == f.name).map(|(_, v)| v.clone()).unwrap_or_default(),
+                })
+                .collect();
+            tables.push(Table { name: name.clone(), columns });
+        }
+        let mut relations = Vec::new();
+        for parent in &names {
+            let parent_schema = self.session.table_schema(parent).expect("registered");
+            for child in names.iter().filter(|c| *c != parent) {
+                let child_schema = self.session.table_schema(child).expect("registered");
+                for key in parent_schema.names().into_iter().filter(|k| k.ends_with("_id") && child_schema.contains(k)) {
+                    if self.session.is_unique(parent, key).await? && !self.session.is_unique(child, key).await? {
+                        relations.push(Relation {
+                            parent: parent.clone(),
+                            child: child.clone(),
+                            key: key.to_string(),
+                            count_percentiles: self.session.count_percentiles(child, key).await?,
+                        });
+                    }
+                }
+            }
+        }
+        Ok(jev_nl::Vocabulary { tables, relations })
     }
 
     /// Decodes and type-checks a logical JevIR plan document.

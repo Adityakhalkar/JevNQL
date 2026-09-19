@@ -13,6 +13,7 @@ path = "src/main.rs"
 jevnql-core = { path = "../jevnql-core" }
 jevir = { path = "../jevir" }
 jev-nql = { path = "../jev-nql" }
+jev-nl = { path = "../jev-nl" }
 clap = { version = "4", features = ["derive"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 serde_json.workspace = true

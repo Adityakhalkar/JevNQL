@@ -1,0 +1,12 @@
+[package]
+name = "jev-nl"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+description = "Natural language to NQL with classic NLP (no language model)"
+
+[dependencies]
+
+[dev-dependencies]
+jev-nql = { path = "../jev-nql" }
+jevir = { path = "../jevir" }
