@@ -164,3 +164,65 @@ async fn semantic_row_budget_is_enforced_before_any_request() {
     assert!(matches!(err, ExecError::SemanticBudget { rows: 6, max: 3 }), "{err}");
     assert_eq!(backend.requests(), 0);
 }
+
+/// Runs `steps` naively and optimized (fresh sessions, so no shared cache) and
+/// checks both return identical rows; returns (naive, optimized) metrics.
+async fn equivalent(steps: Value) -> (jev_executor::ExecMetrics, jev_executor::ExecMetrics) {
+    let doc = json!({"version": 1, "steps": steps}).to_string();
+    let (naive_session, _, _d1) = semantic_session().await;
+    let (opt_session, _, _d2) = semantic_session().await;
+    let naive = run_naive(&naive_session, &doc).await.unwrap();
+    let optimized = run_optimized(&opt_session, &doc).await.unwrap();
+    assert_eq!(rows(&naive), rows(&optimized), "optimized plan changed the result");
+    assert!(!rows(&naive).is_empty());
+    (naive.metrics, optimized.metrics)
+}
+
+#[tokio::test]
+async fn optimizer_preserves_results_and_cuts_semantic_rows() {
+    let (naive, opt) = equivalent(json!([
+        {"id": "o", "op": "scan", "table": "orders"},
+        {"id": "spend", "op": "aggregate", "input": "o", "group_by": ["customer_id"],
+         "aggregates": [{"func": "sum", "arg": c("amount"), "output": "total_spend"}]},
+        {"id": "r", "op": "scan", "table": "reviews"},
+        {"id": "hist", "op": "fetch", "input": "spend", "source": "r",
+         "on": {"left": "customer_id", "right": "customer_id"}, "fields": ["text"], "output": "history"},
+        {"id": "sc", "op": "semantic_score", "input": "hist", "context": ["history"],
+         "question": "How unhappy with pricing?", "levels": ["content", "unhappy"], "output": "unhappy"},
+        {"id": "big", "op": "filter", "input": "sc", "predicate": bin(">", c("total_spend"), l(json!(100.0)))},
+        {"id": "top", "op": "top_k", "input": "big", "k": 2, "keys": [{"expr": c("total_spend"), "descending": true}]},
+        {"id": "out", "op": "project", "input": "top", "exprs": [
+            {"name": "customer_id", "expr": c("customer_id")}, {"name": "unhappy", "expr": c("unhappy")}]}
+    ]))
+    .await;
+    // all 4 customers judged naively; only the top 2 after optimization
+    assert_eq!((naive.semantic_rows, opt.semantic_rows), (4, 2));
+}
+
+#[tokio::test]
+async fn deterministic_filter_runs_before_semantic_filter() {
+    let (naive, opt) = equivalent(json!([
+        {"id": "r", "op": "scan", "table": "reviews"},
+        {"id": "f", "op": "semantic_filter", "input": "r", "context": ["text"], "predicate": "Complains about pricing"},
+        {"id": "low", "op": "filter", "input": "f", "predicate": bin("<=", c("rating"), l(json!(2)))}
+    ]))
+    .await;
+    assert_eq!((naive.semantic_rows, opt.semantic_rows), (6, 2));
+}
+
+#[tokio::test]
+async fn fused_batch_sends_each_state_once() {
+    let (naive, opt) = equivalent(json!([
+        {"id": "r", "op": "scan", "table": "reviews"},
+        {"id": "sc", "op": "semantic_score", "input": "r", "context": ["text"], "question": "How unhappy with pricing?",
+         "levels": ["content", "unhappy"], "output": "unhappy"},
+        {"id": "k", "op": "semantic_choice", "input": "sc", "context": ["text"], "question": "Which segment does this sound like?",
+         "options": [{"label": "enterprise"}, {"label": "smb"}], "output": "sounds_like"},
+        {"id": "s", "op": "sort", "input": "k", "keys": [{"expr": c("review_id")}]}
+    ]))
+    .await;
+    // naive: 6 score + 6 choice requests; fused: 6 requests, 2 questions each
+    assert_eq!((naive.requests, opt.requests), (12, 6));
+    assert_eq!((naive.questions, opt.questions), (12, 12));
+    assert!(opt.input_tokens < naive.input_tokens, "{} vs {}", opt.input_tokens, naive.input_tokens);
+}

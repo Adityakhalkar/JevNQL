@@ -59,6 +59,43 @@ impl Expr {
         Expr::Binary { op, left: Box::new(left), right: Box::new(right) }
     }
 
+    /// Splits `a AND b AND c` into its conjuncts.
+    pub fn conjuncts(&self) -> Vec<&Expr> {
+        match self {
+            Expr::Binary { op: BinaryOp::And, left, right } => {
+                let mut out = left.conjuncts();
+                out.extend(right.conjuncts());
+                out
+            }
+            e => vec![e],
+        }
+    }
+
+    /// Joins expressions with AND; `None` if empty.
+    pub fn conjunction(exprs: impl IntoIterator<Item = Expr>) -> Option<Expr> {
+        exprs.into_iter().reduce(|acc, e| Expr::binary(acc, BinaryOp::And, e))
+    }
+
+    /// Replaces column references for which `f` returns an expression.
+    pub fn substitute(&self, f: &dyn Fn(&str) -> Option<Expr>) -> Expr {
+        let sub = |e: &Expr| Box::new(e.substitute(f));
+        match self {
+            Expr::Column { name } => f(name).unwrap_or_else(|| self.clone()),
+            Expr::Literal(_) => self.clone(),
+            Expr::Binary { op, left, right } => Expr::Binary { op: *op, left: sub(left), right: sub(right) },
+            Expr::Unary { op, expr } => Expr::Unary { op: *op, expr: sub(expr) },
+            Expr::Function { name, args } => {
+                Expr::Function { name: *name, args: args.iter().map(|a| a.substitute(f)).collect() }
+            }
+            Expr::InList { expr, list, negated } => Expr::InList {
+                expr: sub(expr),
+                list: list.iter().map(|a| a.substitute(f)).collect(),
+                negated: *negated,
+            },
+            Expr::IsNull { expr, negated } => Expr::IsNull { expr: sub(expr), negated: *negated },
+        }
+    }
+
     /// Names of all columns the expression reads.
     pub fn columns(&self) -> BTreeSet<&str> {
         let mut out = BTreeSet::new();

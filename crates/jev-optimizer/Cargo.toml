@@ -6,3 +6,6 @@ description = "JevNQL optimizer: logical rewrites and logical -> physical planni
 
 [dependencies]
 jevir = { path = "../jevir" }
+
+[dev-dependencies]
+serde_json.workspace = true

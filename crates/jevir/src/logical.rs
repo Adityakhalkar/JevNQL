@@ -27,6 +27,18 @@ impl LogicalPlan {
     pub fn inputs(&self) -> Vec<&PlanRef> {
         self.op.inputs()
     }
+
+    /// The same operator over new inputs (in [`Op::inputs`] order).
+    pub fn with_inputs(&self, inputs: Vec<PlanRef>) -> PlanRef {
+        assert_eq!(inputs.len(), self.inputs().len(), "{} input arity", self.op.name());
+        let mut inputs = inputs.into_iter();
+        let op = self
+            .op
+            .clone()
+            .try_map_inputs(|_| Ok::<_, std::convert::Infallible>(inputs.next().expect("arity checked")))
+            .unwrap_or_else(|e| match e {});
+        LogicalPlan::new(op)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -213,6 +225,27 @@ impl<I> Op<I> {
     /// Whether the operator requires semantic (model) evaluation.
     pub fn is_semantic(&self) -> bool {
         matches!(self, Op::SemanticFilter(_) | Op::SemanticScore(_) | Op::SemanticChoice(_))
+    }
+
+    /// Columns a semantic operator shows the model.
+    pub fn semantic_context(&self) -> Option<&[String]> {
+        match self {
+            Op::SemanticFilter(s) => Some(&s.context),
+            Op::SemanticScore(s) => Some(&s.context),
+            Op::SemanticChoice(s) => Some(&s.context),
+            _ => None,
+        }
+    }
+
+    /// The column an operator appends to its (first) input, if any.
+    pub fn appended_column(&self) -> Option<&str> {
+        match self {
+            Op::SemanticFilter(s) => s.output.as_deref(),
+            Op::SemanticScore(s) => Some(&s.output),
+            Op::SemanticChoice(s) => Some(&s.output),
+            Op::Fetch(f) => Some(&f.output),
+            _ => None,
+        }
     }
 
     /// Inputs in canonical order (join: left, right; fetch: input, source).

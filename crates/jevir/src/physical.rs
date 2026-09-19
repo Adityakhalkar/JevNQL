@@ -69,6 +69,16 @@ pub enum CachePolicy {
     Disabled,
 }
 
+impl SemanticOp {
+    /// The column this op adds, if any.
+    pub fn output(&self) -> Option<&str> {
+        match self {
+            SemanticOp::Filter { output, .. } => output.as_deref(),
+            SemanticOp::Score { output, .. } | SemanticOp::Choice { output, .. } => Some(output),
+        }
+    }
+}
+
 impl fmt::Display for SemanticOp {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {

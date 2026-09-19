@@ -2061,6 +2061,7 @@ name = "jev-optimizer"
 version = "0.1.0"
 dependencies = [
  "jevir",
+ "serde_json",
 ]
 
 [[package]]

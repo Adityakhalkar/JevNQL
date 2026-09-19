@@ -83,3 +83,16 @@ pub fn date(iso: &str) -> Value {
     json!({"kind": "literal", "value": iso, "type": "date"})
 }
 
+
+/// Runs a plan document through the optimizer (and batch fusion) first.
+pub async fn run_optimized(session: &Session, doc: &str) -> Result<QueryResult, ExecError> {
+    let plan = jevir::decode(doc, session)?;
+    let optimized = jev_optimizer::optimize(&plan, session)?;
+    session.execute(&physical_plan(&optimized.plan, &PhysicalConfig::default())).await
+}
+
+/// Runs a plan exactly as written: no rewrites, no fusion.
+pub async fn run_naive(session: &Session, doc: &str) -> Result<QueryResult, ExecError> {
+    let plan = jevir::decode(doc, session)?;
+    session.execute(&physical_plan(&plan, &PhysicalConfig { fuse: false, ..Default::default() })).await
+}
