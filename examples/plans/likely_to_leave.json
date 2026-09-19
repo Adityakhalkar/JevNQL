@@ -1,0 +1,34 @@
+{
+  "version": 1,
+  "steps": [
+    {"id": "reviews", "op": "scan", "table": "reviews"},
+    {"id": "counts", "op": "aggregate", "input": "reviews", "group_by": ["customer_id"],
+     "aggregates": [{"func": "count", "output": "review_count"}]},
+    {"id": "active", "op": "filter", "input": "counts",
+     "predicate": {"kind": "binary", "op": ">=", "left": {"kind": "column", "name": "review_count"},
+                   "right": {"kind": "literal", "value": 8}}},
+    {"id": "history", "op": "fetch", "input": "active", "source": "reviews",
+     "on": {"left": "customer_id", "right": "customer_id"}, "fields": ["created_at", "rating", "text"],
+     "order_by": [{"expr": {"kind": "column", "name": "created_at"}}], "limit": 30, "output": "review_history"},
+    {"id": "unhappy", "op": "semantic_filter", "input": "history", "context": ["review_history"],
+     "predicate": "Does this customer's review history show dissatisfaction with our pricing or with how much they pay?"},
+    {"id": "tickets", "op": "scan", "table": "tickets"},
+    {"id": "with_tickets", "op": "fetch", "input": "unhappy", "source": "tickets",
+     "on": {"left": "customer_id", "right": "customer_id"}, "fields": ["created_at", "subject", "body"],
+     "order_by": [{"expr": {"kind": "column", "name": "created_at"}}], "limit": 20, "output": "ticket_history"},
+    {"id": "risk", "op": "semantic_score", "input": "with_tickets", "context": ["review_history", "ticket_history"],
+     "question": "Based on this customer's reviews and support tickets, how likely are they to cancel or stop using our product?",
+     "levels": ["No sign of leaving: engaged and satisfied",
+                "Some frustration, but no talk of leaving",
+                "Openly questioning the value or mentioning alternatives",
+                "Clear intent to cancel, not renew, or switch to a competitor"],
+     "output": "leave_risk"},
+    {"id": "top", "op": "top_k", "input": "risk", "k": 20,
+     "keys": [{"expr": {"kind": "column", "name": "leave_risk"}, "descending": true},
+              {"expr": {"kind": "column", "name": "customer_id"}}]},
+    {"id": "result", "op": "project", "input": "top", "exprs": [
+      {"name": "customer_id", "expr": {"kind": "column", "name": "customer_id"}},
+      {"name": "review_count", "expr": {"kind": "column", "name": "review_count"}},
+      {"name": "leave_risk", "expr": {"kind": "column", "name": "leave_risk"}}]}
+  ]
+}

@@ -19,14 +19,17 @@ const STOPWORDS: &[&str] = &[
     "does", "do", "for", "from", "has", "have", "how", "in", "is", "it", "its", "of", "on", "or", "our", "review",
     "reviews", "seem", "seems", "show", "that", "the", "their", "them", "they", "this", "to", "was", "what", "which",
     "who", "with", "whose", "history", "across", "order", "chronological", "specifically", "we", "us", "very",
+    "much", "many", "based", "likely", "their", "tickets", "support", "product",
 ];
 
 /// Concept -> words that express it in customer text.
 const CONCEPTS: &[(&[&str], &[&str])] = &[
     (
-        &["price", "prices", "pricing", "priced", "cost", "costs", "expensive", "value", "money", "billing"],
-        &["price", "prices", "pricing", "pricey", "priced", "expensive", "cost", "costs", "costly", "overpriced", "charge", "charged",
-          "fee", "fees", "bill", "billing", "money", "afford", "subscription"],
+        &["price", "prices", "pricing", "priced", "cost", "costs", "expensive", "value", "money", "billing", "pay",
+          "paying", "paid", "spend"],
+        &["price", "prices", "pricing", "pricey", "priced", "expensive", "cost", "costs", "costly", "overpriced",
+          "charge", "charged", "charges", "fee", "fees", "bill", "billing", "invoice", "money", "afford",
+          "subscription", "pay", "paying", "paid", "quote", "renewal", "budget", "tier", "value"],
     ),
     (
         &["leave", "leaving", "churn", "cancel", "switch", "quit", "stay"],
@@ -42,7 +45,9 @@ const CONCEPTS: &[(&[&str], &[&str])] = &[
 const NEGATIVE: &[&str] = &[
     "unhappy", "disappointed", "disappointing", "frustrated", "frustrating", "angry", "annoyed", "bad", "terrible",
     "awful", "worst", "poor", "hate", "not", "never", "complain", "complaint", "worse", "broken", "slow", "useless",
-    "ridiculous", "too", "again", "cancel", "refund", "expensive", "overpriced", "pricey",
+    "ridiculous", "too", "again", "cancel", "refund", "expensive", "overpriced", "pricey", "hard", "justify",
+    "doubled", "anymore", "stopped", "evaluating", "alternatives", "switching", "competitor", "crashes", "bugs",
+    "slower", "blocking", "above", "expected",
 ];
 
 const NEGATIVE_INTENT: &[&str] = &[
@@ -84,29 +89,50 @@ fn topic_terms(instructions: &str) -> BTreeSet<String> {
     terms
 }
 
-/// Probability-like strength of `instructions` in `state`, in [0, 1].
-fn strength(instructions: &str, state: &Value) -> f64 {
+/// Per-document evidence for `instructions`, in [0, 1], in document order.
+///
+/// With topic words, a document mentioning the topic is evidence (stronger
+/// when negatively worded if the question is about dissatisfaction); without
+/// them, only the sentiment counts.
+fn evidence(instructions: &str, state: &Value) -> Vec<f64> {
     let mut docs = Vec::new();
     texts(state, &mut docs);
-    if docs.is_empty() {
+    let negative = words(instructions).iter().any(|w| NEGATIVE_INTENT.contains(&w.as_str()));
+    let terms = topic_terms(instructions);
+    docs.iter()
+        .map(|doc| {
+            let ws = words(doc);
+            let topical = ws.iter().any(|w| terms.contains(w));
+            let sour = ws.iter().any(|w| NEGATIVE.contains(&w.as_str()));
+            match (terms.is_empty(), topical, negative, sour) {
+                (true, _, true, sour) => f64::from(u8::from(sour)),
+                (true, _, false, _) => 1.0,
+                (false, false, _, _) => 0.0,
+                (false, true, true, false) => 0.3,
+                (false, true, _, _) => 1.0,
+            }
+        })
+        .collect()
+}
+
+/// Degree in [0, 1]: share of the evidence, weighting later documents more
+/// for trend questions (histories are chronological).
+fn strength(instructions: &str, state: &Value) -> f64 {
+    let hits = evidence(instructions, state);
+    if hits.is_empty() {
         return 0.0;
     }
-    let q = words(instructions);
-    let negative = q.iter().any(|w| NEGATIVE_INTENT.contains(&w.as_str()));
-    let trend = q.iter().any(|w| TREND.contains(&w.as_str()));
-    let terms = topic_terms(instructions);
-
-    let hit = |doc: &str| {
-        let ws = words(doc);
-        let topical = terms.is_empty() || ws.iter().any(|w| terms.contains(w));
-        let sour = ws.iter().any(|w| NEGATIVE.contains(&w.as_str()));
-        f64::from(u8::from(topical && (!negative || sour)))
-    };
-    // later documents weigh more for trend questions (histories are chronological)
+    let trend = words(instructions).iter().any(|w| TREND.contains(&w.as_str()));
     let weight = |i: usize| if trend { (i + 1) as f64 } else { 1.0 };
-    let total: f64 = (0..docs.len()).map(weight).sum();
-    let score: f64 = docs.iter().enumerate().map(|(i, d)| weight(i) * hit(d)).sum();
-    score / total
+    let total: f64 = (0..hits.len()).map(weight).sum();
+    hits.iter().enumerate().map(|(i, h)| weight(i) * h).sum::<f64>() / total
+}
+
+/// Probability that the statement holds: saturates with the amount of
+/// evidence rather than its share (one clear complaint in 30 reviews counts).
+fn probability(instructions: &str, state: &Value) -> f64 {
+    let amount: f64 = evidence(instructions, state).iter().sum();
+    0.05 + 0.9 * (1.0 - 0.5f64.powf(amount))
 }
 
 pub struct SimulatedBackend {
@@ -142,7 +168,7 @@ impl SemanticBackend for SimulatedBackend {
                     let answer = match q {
                         Question::Noul { instructions } => {
                             question_chars += instructions.len();
-                            Answer::Noul { probability: 0.05 + 0.9 * strength(instructions, &request.state) }
+                            Answer::Noul { probability: probability(instructions, &request.state) }
                         }
                         Question::Score { instructions, levels } => {
                             question_chars += instructions.len() + levels.iter().map(String::len).sum::<usize>();
@@ -185,8 +211,19 @@ mod tests {
         let q = "Does this customer appear increasingly dissatisfied with our pricing?";
         let unhappy = json!({"history": [{"text": "Great product"}, {"text": "Way too expensive now, cancelling"}]});
         let happy = json!({"history": [{"text": "Price is fair"}, {"text": "Love it, great value"}]});
-        assert!(strength(q, &unhappy) > 0.5);
-        assert!(strength(q, &happy) < 0.2);
+        assert!(strength(q, &unhappy) > 0.4);
+        assert!(strength(q, &unhappy) > 2.0 * strength(q, &happy));
+    }
+
+    #[test]
+    fn probability_grows_with_evidence() {
+        let q = "Does this customer complain about pricing?";
+        let one = json!([{"text": "love it"}, {"text": "fine"}, {"text": "too expensive"}]);
+        let two = json!([{"text": "too expensive"}, {"text": "fine"}, {"text": "price went up again"}]);
+        let none = json!([{"text": "love it"}]);
+        assert!(probability(q, &two) > probability(q, &one));
+        assert!(probability(q, &one) >= 0.5);
+        assert!(probability(q, &none) < 0.1);
     }
 
     #[test]

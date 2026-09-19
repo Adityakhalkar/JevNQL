@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "steps": [
+    {"id": "reviews", "op": "scan", "table": "reviews"},
+    {"id": "counts", "op": "aggregate", "input": "reviews", "group_by": ["customer_id"],
+     "aggregates": [{"func": "count", "output": "review_count"}]},
+    {"id": "active", "op": "filter", "input": "counts",
+     "predicate": {"kind": "binary", "op": ">=", "left": {"kind": "column", "name": "review_count"},
+                   "right": {"kind": "literal", "value": 8}}},
+    {"id": "history", "op": "fetch", "input": "active", "source": "reviews",
+     "on": {"left": "customer_id", "right": "customer_id"}, "fields": ["created_at", "rating", "text"],
+     "order_by": [{"expr": {"kind": "column", "name": "created_at"}}], "limit": 30, "output": "review_history"},
+    {"id": "unhappy", "op": "semantic_filter", "input": "history", "context": ["review_history"],
+     "predicate": "Does this customer's review history show dissatisfaction with our pricing or with how much they pay?",
+     "output": "p_pricing_unhappy"},
+    {"id": "customers", "op": "scan", "table": "customers"},
+    {"id": "named", "op": "join", "left": "unhappy", "right": "customers",
+     "on": [{"left": "customer_id", "right": "customer_id"}]},
+    {"id": "sorted", "op": "sort", "input": "named",
+     "keys": [{"expr": {"kind": "column", "name": "p_pricing_unhappy"}, "descending": true},
+              {"expr": {"kind": "column", "name": "customer_id"}}]},
+    {"id": "result", "op": "project", "input": "sorted", "exprs": [
+      {"name": "customer_id", "expr": {"kind": "column", "name": "customer_id"}},
+      {"name": "name", "expr": {"kind": "column", "name": "name"}},
+      {"name": "segment", "expr": {"kind": "column", "name": "segment"}},
+      {"name": "review_count", "expr": {"kind": "column", "name": "review_count"}},
+      {"name": "p_pricing_unhappy", "expr": {"kind": "column", "name": "p_pricing_unhappy"}}]}
+  ]
+}

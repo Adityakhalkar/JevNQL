@@ -107,10 +107,17 @@ impl Lowerer<'_> {
                 let named_struct = self.udf("named_struct")?.call(
                     f.fields.iter().flat_map(|name| [lit(name.as_str()), column(None, name)]).collect(),
                 );
-                let mut list = array_agg(named_struct);
-                if !f.order_by.is_empty() {
-                    list = list.order_by(self.sort_exprs(&f.order_by)?).build()?;
+                // ties broken by every orderable fetched field, so the list (and
+                // what `limit` keeps) is deterministic
+                let mut order = self.sort_exprs(&f.order_by)?;
+                for name in &f.fields {
+                    let nested = source.schema().field_with_unqualified_name(name).map(|x| x.data_type().is_nested());
+                    let already = f.order_by.iter().any(|k| k.expr == jevir::expr::col(name.as_str()));
+                    if matches!(nested, Ok(false)) && !already {
+                        order.push(column(None, name).sort(true, false));
+                    }
                 }
+                let list = array_agg(named_struct).order_by(order).build()?;
                 let mut history = source.aggregate(vec![column(None, &f.on.right)], vec![list.alias(&f.output)])?;
                 if let Some(limit) = f.limit {
                     let sliced = self

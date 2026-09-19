@@ -171,3 +171,28 @@ async fn write_parquet(csv: &Path, parquet: &Path) {
         .await
         .unwrap();
 }
+
+#[tokio::test]
+async fn fetch_order_is_deterministic_under_ties() {
+    let dir = TempDir::new().unwrap();
+    let mut s = Session::new();
+    for (name, data) in [
+        ("people", "id\n1\n"),
+        ("notes", "id,day,text\n1,2026-01-01,b\n1,2026-01-01,c\n1,2026-01-01,a\n1,2025-12-31,z\n"),
+    ] {
+        let path = dir.path().join(format!("{name}.csv"));
+        std::fs::write(&path, data).unwrap();
+        s.register_file(&path).await.unwrap();
+    }
+    let steps = json!([
+        {"id": "p", "op": "scan", "table": "people"},
+        {"id": "n", "op": "scan", "table": "notes"},
+        {"id": "f", "op": "fetch", "input": "p", "source": "n", "on": {"left": "id", "right": "id"},
+         "fields": ["day", "text"], "order_by": [{"expr": c("day"), "descending": true}], "limit": 2, "output": "recent"}
+    ]);
+    // ties on `day` are broken by the fetched fields, so `limit` keeps the same rows every time
+    for _ in 0..5 {
+        let result = run(&s, steps.clone()).await.unwrap();
+        assert_eq!(rows(&result)[0][1], "[{day: 2026-01-01, text: a}, {day: 2026-01-01, text: b}]");
+    }
+}

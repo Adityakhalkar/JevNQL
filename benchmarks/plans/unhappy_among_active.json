@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "steps": [
+    {"id": "reviews", "op": "scan", "table": "reviews"},
+    {"id": "counts", "op": "aggregate", "input": "reviews", "group_by": ["customer_id"],
+     "aggregates": [{"func": "count", "output": "review_count"}]},
+    {"id": "history", "op": "fetch", "input": "counts", "source": "reviews",
+     "on": {"left": "customer_id", "right": "customer_id"}, "fields": ["created_at", "rating", "text"],
+     "order_by": [{"expr": {"kind": "column", "name": "created_at"}}], "limit": 30, "output": "review_history"},
+    {"id": "unhappy", "op": "semantic_filter", "input": "history", "context": ["review_history"],
+     "predicate": "Does this customer's review history show dissatisfaction with our pricing or with how much they pay?"},
+    {"id": "active", "op": "filter", "input": "unhappy",
+     "predicate": {"kind": "binary", "op": ">=", "left": {"kind": "column", "name": "review_count"},
+                   "right": {"kind": "literal", "value": 8}}},
+    {"id": "result", "op": "sort", "input": "active", "keys": [{"expr": {"kind": "column", "name": "customer_id"}}]}
+  ]
+}

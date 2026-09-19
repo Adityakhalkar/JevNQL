@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "steps": [
+    {"id": "reviews", "op": "scan", "table": "reviews"},
+    {"id": "counts", "op": "aggregate", "input": "reviews", "group_by": ["customer_id"],
+     "aggregates": [{"func": "count", "output": "review_count"}]},
+    {"id": "customers", "op": "scan", "table": "customers"},
+    {"id": "named", "op": "join", "left": "counts", "right": "customers",
+     "on": [{"left": "customer_id", "right": "customer_id"}]},
+    {"id": "top", "op": "top_k", "input": "named", "k": 10,
+     "keys": [{"expr": {"kind": "column", "name": "review_count"}, "descending": true},
+              {"expr": {"kind": "column", "name": "customer_id"}}]},
+    {"id": "result", "op": "project", "input": "top", "exprs": [
+      {"name": "customer_id", "expr": {"kind": "column", "name": "customer_id"}},
+      {"name": "name", "expr": {"kind": "column", "name": "name"}},
+      {"name": "segment", "expr": {"kind": "column", "name": "segment"}},
+      {"name": "review_count", "expr": {"kind": "column", "name": "review_count"}}]}
+  ]
+}

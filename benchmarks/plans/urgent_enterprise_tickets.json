@@ -1,0 +1,33 @@
+{
+  "version": 1,
+  "steps": [
+    {"id": "tickets", "op": "scan", "table": "tickets"},
+    {"id": "customers", "op": "scan", "table": "customers"},
+    {"id": "joined", "op": "join", "left": "tickets", "right": "customers",
+     "on": [{"left": "customer_id", "right": "customer_id"}]},
+    {"id": "urgency", "op": "semantic_score", "input": "joined", "context": ["subject", "body"],
+     "question": "How urgent is this support ticket for the customer's business?",
+     "levels": ["Routine question, no time pressure", "Inconvenient but work continues",
+                "Blocking the customer's work or putting the account at risk"],
+     "output": "urgency"},
+    {"id": "topic", "op": "semantic_choice", "input": "urgency", "context": ["subject", "body"],
+     "question": "What is this support ticket mainly about?",
+     "options": [{"label": "billing", "description": "invoices, charges, pricing, renewals"},
+                 {"label": "bug", "description": "crashes, sync failures, errors, slowness"},
+                 {"label": "account", "description": "contracts, cancellation, data export before leaving"},
+                 {"label": "how-to", "description": "questions about using features"}],
+     "output": "topic"},
+    {"id": "open_enterprise", "op": "filter", "input": "topic", "predicate": {"kind": "binary", "op": "and",
+       "left": {"kind": "binary", "op": "=", "left": {"kind": "column", "name": "status"}, "right": {"kind": "literal", "value": "open"}},
+       "right": {"kind": "binary", "op": "=", "left": {"kind": "column", "name": "segment"}, "right": {"kind": "literal", "value": "enterprise"}}}},
+    {"id": "top", "op": "top_k", "input": "open_enterprise", "k": 25,
+     "keys": [{"expr": {"kind": "column", "name": "urgency"}, "descending": true},
+              {"expr": {"kind": "column", "name": "ticket_id"}}]},
+    {"id": "result", "op": "project", "input": "top", "exprs": [
+      {"name": "ticket_id", "expr": {"kind": "column", "name": "ticket_id"}},
+      {"name": "name", "expr": {"kind": "column", "name": "name"}},
+      {"name": "subject", "expr": {"kind": "column", "name": "subject"}},
+      {"name": "urgency", "expr": {"kind": "column", "name": "urgency"}},
+      {"name": "topic", "expr": {"kind": "column", "name": "topic"}}]}
+  ]
+}

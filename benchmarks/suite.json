@@ -1,0 +1,19 @@
+[
+  {
+    "name": "unhappy_among_active",
+    "question": "Which customers with at least 8 reviews seem unhappy about pricing?",
+    "plan": "plans/unhappy_among_active.json",
+    "truth": {"persona": "pricing_sour", "key": "customer_id", "min_reviews": 8}
+  },
+  {
+    "name": "top_spenders_unhappy",
+    "question": "How unhappy with pricing is each of our 100 biggest spenders this year?",
+    "plan": "plans/top_spenders_unhappy.json",
+    "truth": {"persona": "pricing_sour", "key": "customer_id", "score": "pricing_dissatisfaction", "threshold": 0.4}
+  },
+  {
+    "name": "urgent_enterprise_tickets",
+    "question": "Which open enterprise tickets sound most urgent, and what are they about?",
+    "plan": "plans/urgent_enterprise_tickets.json"
+  }
+]
