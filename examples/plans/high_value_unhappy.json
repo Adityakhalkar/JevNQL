@@ -1,0 +1,33 @@
+{
+  "version": 1,
+  "steps": [
+    {"id": "orders", "op": "scan", "table": "orders"},
+    {"id": "this_year", "op": "filter", "input": "orders",
+     "predicate": {"kind": "binary", "op": ">=",
+                   "left": {"kind": "column", "name": "order_date"},
+                   "right": {"kind": "literal", "value": "2026-01-01", "type": "date"}}},
+    {"id": "spend", "op": "aggregate", "input": "this_year",
+     "group_by": ["customer_id"],
+     "aggregates": [{"func": "sum", "arg": {"kind": "column", "name": "amount"}, "output": "total_spend"}]},
+    {"id": "top_spenders", "op": "top_k", "input": "spend", "k": 500,
+     "keys": [{"expr": {"kind": "column", "name": "total_spend"}, "descending": true}]},
+    {"id": "reviews", "op": "scan", "table": "reviews"},
+    {"id": "with_history", "op": "fetch", "input": "top_spenders", "source": "reviews",
+     "on": {"left": "customer_id", "right": "customer_id"},
+     "fields": ["created_at", "rating", "text"],
+     "order_by": [{"expr": {"kind": "column", "name": "created_at"}}],
+     "limit": 50,
+     "output": "review_history"},
+    {"id": "scored", "op": "semantic_score", "input": "with_history",
+     "context": ["review_history"],
+     "question": "Across this customer's reviews in chronological order, how increasingly dissatisfied do they appear with our pricing?",
+     "levels": [
+       "No pricing complaints, or satisfaction with pricing is stable or improving",
+       "Occasional pricing complaints with no clear worsening trend",
+       "Pricing complaints that grow more frequent or more severe over time"
+     ],
+     "output": "dissatisfaction"},
+    {"id": "result", "op": "top_k", "input": "scored", "k": 20,
+     "keys": [{"expr": {"kind": "column", "name": "dissatisfaction"}, "descending": true}]}
+  ]
+}

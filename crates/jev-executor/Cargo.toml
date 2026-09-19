@@ -1,0 +1,15 @@
+[package]
+name = "jev-executor"
+version = "0.1.0"
+edition.workspace = true
+description = "JevNQL executor: runs JevIR plans on DataFusion (relational) and semantic backends"
+
+[dependencies]
+jevir = { path = "../jevir" }
+datafusion = "55.1"
+thiserror.workspace = true
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+tempfile = "3"
+serde_json.workspace = true
