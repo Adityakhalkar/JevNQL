@@ -5,6 +5,7 @@
 //! compiler and shell use until native bindings exist.
 
 mod render;
+mod repl;
 
 use std::io::{BufRead, Read, Write};
 use std::path::PathBuf;
@@ -65,6 +66,32 @@ enum Command {
         #[arg(required = true)]
         files: Vec<PathBuf>,
     },
+    /// Run one NQL query: EXPLAIN, results and metrics.
+    Query {
+        /// The query text (or use --file).
+        #[arg(short = 'e', long, conflicts_with = "file")]
+        query: Option<String>,
+        /// Read the query from a file.
+        #[arg(long)]
+        file: Option<PathBuf>,
+        /// Show plans without executing.
+        #[arg(long)]
+        explain: bool,
+        /// Print the compiled JevIR plan document instead of running it.
+        #[arg(long)]
+        emit_ir: bool,
+        #[arg(long)]
+        no_optimize: bool,
+        #[arg(required = true)]
+        files: Vec<PathBuf>,
+    },
+    /// Interactive NQL shell.
+    Repl {
+        #[arg(long)]
+        no_optimize: bool,
+        #[arg(required = true)]
+        files: Vec<PathBuf>,
+    },
     /// Answer JSON requests, one per line on stdin, keeping data and the
     /// semantic cache loaded between requests.
     Serve { #[arg(required = true)] files: Vec<PathBuf> },
@@ -72,7 +99,7 @@ enum Command {
 
 #[derive(Deserialize)]
 #[serde(tag = "cmd", rename_all = "snake_case")]
-enum Request {
+pub(crate) enum Request {
     Catalog,
     Validate { plan: Value },
     Run {
@@ -152,6 +179,37 @@ async fn run(cli: Cli) -> Result<ExitCode, Error> {
                 }
             }
         }
+        Command::Query { query, file, explain, emit_ir, no_optimize, files } => {
+            let source = match (query, file) {
+                (Some(q), _) => q.clone(),
+                (None, Some(path)) => std::fs::read_to_string(path)?,
+                (None, None) => return Err("give a query with -e or --file".into()),
+            };
+            let engine = open(&cli, files, !explain && !emit_ir).await?;
+            let compiled = match jev_nql::compile(&source, engine.session()) {
+                Ok(c) => c,
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    return Ok(ExitCode::FAILURE);
+                }
+            };
+            if *emit_ir {
+                println!("{}", serde_json::to_string_pretty(&compiled.document)?);
+                return Ok(ExitCode::SUCCESS);
+            }
+            let out = handle(&engine, Request::Run { plan: compiled.document, explain_only: *explain, optimize: !no_optimize }).await;
+            match out["ok"] == json!(true) {
+                true => print!("{}", out["text"].as_str().unwrap_or_default()),
+                false => {
+                    eprintln!("error: {}", out["error"].as_str().unwrap_or_default());
+                    return Ok(ExitCode::FAILURE);
+                }
+            }
+        }
+        Command::Repl { no_optimize, files } => {
+            let engine = open(&cli, files, true).await?;
+            repl::run(&engine, !no_optimize).await?;
+        }
         Command::Serve { files } => {
             let engine = open(&cli, files, true).await?;
             let mut stdout = std::io::stdout();
@@ -173,7 +231,7 @@ async fn run(cli: Cli) -> Result<ExitCode, Error> {
 }
 
 /// Answers one request as JSON; errors become `{"ok": false, "error": ...}`.
-async fn handle(engine: &Engine, request: Request) -> Value {
+pub(crate) async fn handle(engine: &Engine, request: Request) -> Value {
     let result: Result<Value, Error> = async {
         Ok(match request {
             Request::Catalog => json!({"ok": true, "tables": engine.profiles().await?}),

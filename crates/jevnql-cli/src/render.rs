@@ -89,16 +89,29 @@ pub fn metrics(m: &ExecMetrics, prepared: &Prepared, backend: Option<&str>) -> S
             },
         );
     }
-    row("Rows scanned", format!("{}", m.rows_scanned));
-    row("Rows to semantic operators", format!("{}", m.semantic_rows));
-    row("Distinct states judged", format!("{}", m.distinct_states));
-    row("Jev batches / requests", format!("{} / {}", m.semantic_batches, m.requests));
-    row("Questions asked", format!("{}", m.questions));
-    row("Input tokens", format!("{}", m.input_tokens));
-    row("Cache hits", format!("{}", m.cache_hits));
+    row("Rows scanned", thousands(m.rows_scanned as u64));
+    row("Rows to semantic operators", thousands(m.semantic_rows as u64));
+    row("Distinct states judged", thousands(m.distinct_states as u64));
+    row("Jev batches / requests", format!("{} / {}", m.semantic_batches, thousands(m.requests as u64)));
+    row("Questions asked", thousands(m.questions as u64));
+    row("Input tokens", thousands(m.input_tokens));
+    row("Cache hits", thousands(m.cache_hits as u64));
     row("Execution time", format!("{:.1} ms (semantic {:.1} ms)", ms(m.total_time), ms(m.semantic_time)));
     row("Estimated semantic cost", format!("${:.6}", m.estimated_cost_usd));
     s
+}
+
+/// `1234567` -> `1,234,567`.
+fn thousands(n: u64) -> String {
+    let digits = n.to_string();
+    let mut out = String::new();
+    for (i, c) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i) % 3 == 0 {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    out
 }
 
 /// Arrow cell formatting, re-exported through the executor's DataFusion.

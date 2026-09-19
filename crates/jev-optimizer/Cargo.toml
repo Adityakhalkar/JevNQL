@@ -2,6 +2,7 @@
 name = "jev-optimizer"
 version = "0.1.0"
 edition.workspace = true
+rust-version.workspace = true
 description = "JevNQL optimizer: logical rewrites and logical -> physical planning"
 
 [dependencies]

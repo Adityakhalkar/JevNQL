@@ -1,12 +1,17 @@
 [package]
-name = "jevnql-core"
+name = "jev-nql"
 version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
-description = "JevNQL engine API: data registration, plan validation, optimization and execution"
+description = "NQL: a structured natural query language compiled to logical JevIR"
 
 [dependencies]
 jevir = { path = "../jevir" }
+serde_json.workspace = true
+
+[dev-dependencies]
 jev-executor = { path = "../jev-executor" }
 jev-optimizer = { path = "../jev-optimizer" }
 jev-provider = { path = "../jev-provider" }
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+datafusion = "55.1"
