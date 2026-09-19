@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The JevNQL demo from the spec: NQL queries on generated data.
+# The JevNQL demo: three NQL questions on generated data.
 #   examples/demo.sh [demo|large]
 # Semantic judgments use Jev when TYPESAFE_API_KEY is set, else the offline
 # simulator (override with BACKEND=jev|simulated).

@@ -20,7 +20,7 @@ fn catalog() -> HashMap<String, Schema> {
     ])
 }
 
-const SPEC_EXAMPLE: &str = r#"
+const README_EXAMPLE: &str = r#"
 FROM customers
 WITH orders  AS spend   (SUM amount WHERE order_date >= DATE '2026-01-01')
 WITH reviews AS history (LAST 30 BY created_at)
@@ -41,8 +41,8 @@ fn err(src: &str) -> String {
 }
 
 #[test]
-fn spec_example_compiles_to_typed_plan() {
-    let c = compile(SPEC_EXAMPLE, &catalog()).unwrap();
+fn readme_example_compiles_to_typed_plan() {
+    let c = compile(README_EXAMPLE, &catalog()).unwrap();
     assert_eq!(c.plan.schema.to_string(), "(customer_id: int64, name: utf8, spend: float64, leave_risk: float64)");
     let text = c.plan.plan.to_string();
     let ops: Vec<&str> = text.lines().map(|l| l.trim_start_matches(|ch: char| " │├└─".contains(ch)).split('[').next().unwrap()).collect();
