@@ -1,8 +1,8 @@
 //! Lowering of relational JevIR operators to DataFusion plans.
 //!
 //! JevIR stays the source of truth: this module only translates already
-//! validated operators. Semantic operators are not relational and are handled
-//! by the caller (see [`Lowerer::lower`]).
+//! validated operators. Semantic operators are not relational: the caller
+//! executes them first and supplies their results as `materialized` inputs.
 
 use std::collections::HashMap;
 
@@ -19,6 +19,7 @@ use jevir::{AggFunc, AggregateExpr, BinaryOp, Expr, Function, LogicalPlan, Scala
 use crate::error::ExecError;
 
 /// A lowered relation plus the row order it is known to carry.
+#[derive(Clone)]
 pub(crate) struct Lowered {
     pub df: DataFrame,
     /// Sort keys the rows are ordered by, if an upstream Sort/TopK ordering
@@ -31,11 +32,16 @@ pub(crate) struct Lowerer<'a> {
     pub ctx: &'a SessionContext,
     /// Base tables referenced by the plan, keyed by name.
     pub tables: &'a HashMap<String, DataFrame>,
+    /// Results of already-executed semantic subtrees, keyed by node address.
+    pub materialized: &'a HashMap<usize, Lowered>,
 }
 
 impl Lowerer<'_> {
     /// Lowers a plan whose operators are all relational.
     pub fn lower(&self, plan: &LogicalPlan) -> Result<Lowered, ExecError> {
+        if let Some(done) = self.materialized.get(&(plan as *const LogicalPlan as usize)) {
+            return Ok(done.clone());
+        }
         let input = |i: usize| self.lower(plan.inputs()[i]);
         Ok(match &plan.op {
             Op::Scan(scan) => {
@@ -131,20 +137,17 @@ impl Lowerer<'_> {
                 Lowered { df, ordering: l.ordering }
             }
             op @ (Op::SemanticFilter(_) | Op::SemanticScore(_) | Op::SemanticChoice(_)) => {
-                return Err(ExecError::Unsupported(format!(
-                    "{} needs a semantic backend, which this executor does not have yet",
-                    op.name()
-                )));
+                return Err(ExecError::Internal(format!("{} reached relational lowering unexecuted", op.name())));
             }
         })
     }
 
     /// Lowers the plan root, re-establishing inherited row order.
-    pub fn lower_root(&self, plan: &LogicalPlan) -> Result<DataFrame, ExecError> {
-        let Lowered { df, ordering } = self.lower(plan)?;
-        match (&plan.op, ordering) {
-            (Op::Sort(_) | Op::TopK(_), _) | (_, None) => Ok(df),
-            (_, Some(keys)) => Ok(df.sort(self.sort_exprs(&keys)?)?),
+    pub fn lower_root(&self, plan: &LogicalPlan) -> Result<Lowered, ExecError> {
+        let lowered = self.lower(plan)?;
+        match (&plan.op, &lowered.ordering) {
+            (Op::Sort(_) | Op::TopK(_), _) | (_, None) => Ok(lowered),
+            (_, Some(keys)) => Ok(Lowered { df: lowered.df.sort(self.sort_exprs(keys)?)?, ordering: lowered.ordering }),
         }
     }
 

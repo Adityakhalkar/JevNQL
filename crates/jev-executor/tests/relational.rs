@@ -1,82 +1,14 @@
+mod common;
+
 use std::path::Path;
 
-use datafusion::arrow::util::display::array_value_to_string;
+use common::*;
 use datafusion::dataframe::DataFrameWriteOptions;
 use datafusion::prelude::{CsvReadOptions, SessionContext};
-use jev_executor::{ExecError, QueryResult, Session};
+use jev_executor::{ExecError, Session};
 use jevir::DataType;
-use serde_json::{Value, json};
+use serde_json::json;
 use tempfile::TempDir;
-
-const CUSTOMERS: &str = "customer_id,name,segment
-1,Asha,enterprise
-2,Ben,smb
-3,Chen,enterprise
-4,Dia,smb
-";
-
-const ORDERS: &str = "order_id,customer_id,amount,order_date
-101,1,500.0,2026-02-01
-102,1,300.0,2025-12-20
-103,2,900.0,2026-03-05
-104,3,50.0,2026-01-10
-105,3,75.5,2026-04-01
-106,2,100.0,2026-05-01
-107,4,20.0,2025-06-01
-";
-
-const REVIEWS: &str = "review_id,customer_id,rating,text,created_at
-1,1,4,Great product,2026-01-05
-2,1,2,\"Price went up again, not happy\",2026-03-01
-3,2,5,Love it,2026-02-02
-4,2,1,Too expensive now,2026-04-10
-5,2,3,Okay but pricey,2026-03-15
-6,3,5,Excellent,2026-01-20
-";
-
-const EXAMPLE: &str = include_str!("../../../examples/plans/high_value_unhappy.json");
-
-async fn session() -> (Session, TempDir) {
-    let dir = TempDir::new().unwrap();
-    let mut session = Session::new();
-    for (name, data) in [("customers", CUSTOMERS), ("orders", ORDERS), ("reviews", REVIEWS)] {
-        let path = dir.path().join(format!("{name}.csv"));
-        std::fs::write(&path, data).unwrap();
-        assert_eq!(session.register_file(&path).await.unwrap(), name);
-    }
-    (session, dir)
-}
-
-async fn run(session: &Session, steps: Value) -> Result<QueryResult, ExecError> {
-    let plan = jevir::decode(&json!({"version": 1, "steps": steps}).to_string(), session)?;
-    session.execute(&plan).await
-}
-
-fn rows(result: &QueryResult) -> Vec<Vec<String>> {
-    let mut out = Vec::new();
-    for batch in &result.batches {
-        for r in 0..batch.num_rows() {
-            out.push(batch.columns().iter().map(|c| array_value_to_string(c, r).unwrap()).collect());
-        }
-    }
-    out
-}
-
-fn c(name: &str) -> Value {
-    json!({"kind": "column", "name": name})
-}
-
-fn bin(op: &str, left: Value, right: Value) -> Value {
-    json!({"kind": "binary", "op": op, "left": left, "right": right})
-}
-
-fn l(value: Value) -> Value {
-    json!({"kind": "literal", "value": value})
-}
-
-fn date(iso: &str) -> Value {
-    json!({"kind": "literal", "value": iso, "type": "date"})
-}
 
 #[tokio::test]
 async fn catalog_maps_csv_types() {
@@ -118,11 +50,10 @@ async fn top_spenders_with_fetched_history() {
 }
 
 #[tokio::test]
-async fn semantic_operators_are_not_yet_executable() {
+async fn semantic_plan_without_backend_is_rejected() {
     let (s, _dir) = session().await;
-    let plan = jevir::decode(EXAMPLE, &s).unwrap();
-    let err = s.execute(&plan).await.unwrap_err();
-    assert!(matches!(err, ExecError::Unsupported(ref m) if m.contains("SemanticScore")), "{err}");
+    let err = run_json(&s, EXAMPLE).await.unwrap_err();
+    assert!(matches!(err, ExecError::NoSemanticBackend), "{err}");
 }
 
 #[tokio::test]

@@ -1,12 +1,15 @@
 //! JevNQL executor.
 //!
-//! Relational JevIR operators are lowered to Apache DataFusion; semantic
-//! operators run on a semantic backend (added in a later step).
+//! Executes physical JevIR: relational segments on Apache DataFusion,
+//! semantic batches on a [`jev_provider::SemanticBackend`].
 
 pub mod error;
+pub mod metrics;
 mod relational;
+mod semantic;
 pub mod session;
 pub mod types;
 
 pub use error::ExecError;
-pub use session::{QueryResult, Session};
+pub use metrics::ExecMetrics;
+pub use session::{DEFAULT_MAX_SEMANTIC_ROWS, QueryResult, Session};

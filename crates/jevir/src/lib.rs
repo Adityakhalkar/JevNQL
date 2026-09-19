@@ -9,6 +9,7 @@ pub mod error;
 pub mod expr;
 pub mod json;
 pub mod logical;
+pub mod physical;
 pub mod types;
 pub mod validate;
 

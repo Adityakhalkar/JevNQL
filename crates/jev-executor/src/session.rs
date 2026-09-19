@@ -2,28 +2,42 @@
 
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::Arc;
+use std::time::Instant;
 
 use datafusion::arrow::array::RecordBatch;
+use datafusion::arrow::compute::concat_batches;
 use datafusion::arrow::util::pretty::pretty_format_batches;
 use datafusion::prelude::{CsvReadOptions, ParquetReadOptions, SessionContext};
 use jevir::logical::Op;
-use jevir::{Catalog, LogicalPlan, Schema, ValidatedPlan};
+use jev_provider::{BoxFuture, SemanticBackend};
+use jevir::physical::{PhysicalPlan, PhysicalQuery};
+use jevir::{Catalog, LogicalPlan, Schema, SortKey};
 
 use crate::error::ExecError;
-use crate::relational::Lowerer;
+use crate::metrics::ExecMetrics;
+use crate::relational::{Lowered, Lowerer};
+use crate::semantic::{SemanticCache, SemanticRuntime};
 use crate::types::schema_to_jevir;
 
 /// Owns the DataFusion context and the JevIR view of every registered table.
 pub struct Session {
     ctx: SessionContext,
     tables: HashMap<String, Schema>,
+    semantic: Option<Arc<dyn SemanticBackend>>,
+    cache: SemanticCache,
+    max_semantic_rows: usize,
 }
+
+/// Default cap on rows sent to the semantic backend by one operator.
+pub const DEFAULT_MAX_SEMANTIC_ROWS: usize = 10_000;
 
 /// Rows produced by a plan, with their JevIR schema.
 #[derive(Debug)]
 pub struct QueryResult {
     pub schema: Schema,
     pub batches: Vec<RecordBatch>,
+    pub metrics: ExecMetrics,
 }
 
 impl QueryResult {
@@ -44,7 +58,27 @@ impl Default for Session {
 
 impl Session {
     pub fn new() -> Self {
-        Self { ctx: SessionContext::new(), tables: HashMap::new() }
+        Self {
+            ctx: SessionContext::new(),
+            tables: HashMap::new(),
+            semantic: None,
+            cache: SemanticCache::default(),
+            max_semantic_rows: DEFAULT_MAX_SEMANTIC_ROWS,
+        }
+    }
+
+    pub fn with_semantic_backend(mut self, backend: Arc<dyn SemanticBackend>) -> Self {
+        self.semantic = Some(backend);
+        self
+    }
+
+    pub fn semantic_backend(&self) -> Option<&dyn SemanticBackend> {
+        self.semantic.as_deref()
+    }
+
+    /// Caps the rows any single semantic operator may send to the backend.
+    pub fn set_max_semantic_rows(&mut self, max: usize) {
+        self.max_semantic_rows = max;
     }
 
     /// Registers a `.csv` or `.parquet` file under its file stem
@@ -89,24 +123,73 @@ impl Session {
         Ok(())
     }
 
-    /// Executes a validated plan.
-    pub async fn execute(&self, plan: &ValidatedPlan) -> Result<QueryResult, ExecError> {
-        let mut tables = HashMap::new();
-        for name in scanned_tables(&plan.plan) {
-            let df = self.ctx.table(name.as_str()).await?;
-            tables.insert(name, df);
-        }
-        let df = Lowerer { ctx: &self.ctx, tables: &tables }.lower_root(&plan.plan)?;
+    /// Executes a physical plan.
+    pub async fn execute(&self, query: &PhysicalQuery) -> Result<QueryResult, ExecError> {
+        let start = Instant::now();
+        let mut metrics = ExecMetrics::default();
+        let out = self.run(&query.root, &mut metrics).await?;
 
-        let produced = schema_to_jevir(df.schema().as_arrow())?;
-        if produced != plan.schema {
+        let produced = schema_to_jevir(out.batch.schema().as_ref())?;
+        if produced != query.schema {
             return Err(ExecError::Internal(format!(
-                "DataFusion produced schema {produced}, but JevIR inferred {}",
-                plan.schema
+                "execution produced schema {produced}, but JevIR inferred {}",
+                query.schema
             )));
         }
-        Ok(QueryResult { schema: plan.schema.clone(), batches: df.collect().await? })
+        metrics.total_time = start.elapsed();
+        if let Some(backend) = &self.semantic {
+            metrics.estimated_cost_usd =
+                metrics.input_tokens as f64 * backend.info().usd_per_million_input_tokens / 1e6;
+        }
+        Ok(QueryResult { schema: query.schema.clone(), batches: vec![out.batch], metrics })
     }
+
+    fn run<'a>(
+        &'a self,
+        plan: &'a PhysicalPlan,
+        metrics: &'a mut ExecMetrics,
+    ) -> BoxFuture<'a, Result<Materialized, ExecError>> {
+        Box::pin(async move {
+            match plan {
+                PhysicalPlan::JevBatch(exec) => {
+                    let input = self.run(&exec.input, metrics).await?;
+                    let backend = self.semantic.as_deref().ok_or(ExecError::NoSemanticBackend)?;
+                    let runtime = SemanticRuntime { backend, cache: &self.cache, max_rows: self.max_semantic_rows };
+                    let batch = runtime.evaluate(exec, input.batch, metrics).await?;
+                    // semantic operators preserve row order
+                    Ok(Materialized { batch, ordering: input.ordering })
+                }
+                PhysicalPlan::DataFusion(exec) => {
+                    let mut materialized = HashMap::new();
+                    for input in &exec.inputs {
+                        let done = self.run(&input.exec, metrics).await?;
+                        let df = self.ctx.read_batch(done.batch)?;
+                        materialized.insert(Arc::as_ptr(&input.node) as usize, Lowered { df, ordering: done.ordering });
+                    }
+                    let mut tables = HashMap::new();
+                    for name in scanned_tables(&exec.plan) {
+                        let df = self.ctx.table(name.as_str()).await?;
+                        tables.insert(name, df);
+                    }
+                    let lowered = Lowerer { ctx: &self.ctx, tables: &tables, materialized: &materialized }
+                        .lower_root(&exec.plan)?;
+                    let schema = Arc::new(lowered.df.schema().as_arrow().clone());
+                    let batches = lowered.df.collect().await?;
+                    let batch = match batches.first() {
+                        Some(first) => concat_batches(&first.schema(), &batches)?,
+                        None => RecordBatch::new_empty(schema),
+                    };
+                    Ok(Materialized { batch, ordering: lowered.ordering })
+                }
+            }
+        })
+    }
+}
+
+/// A fully computed intermediate result.
+struct Materialized {
+    batch: RecordBatch,
+    ordering: Option<Vec<SortKey>>,
 }
 
 impl Catalog for Session {

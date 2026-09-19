@@ -8,8 +8,12 @@ description = "JevNQL executor: runs JevIR plans on DataFusion (relational) and 
 jevir = { path = "../jevir" }
 datafusion = "55.1"
 thiserror.workspace = true
+jev-provider = { path = "../jev-provider" }
+futures = "0.3"
+serde_json.workspace = true
 
 [dev-dependencies]
+jev-optimizer = { path = "../jev-optimizer" }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 tempfile = "3"
 serde_json.workspace = true
