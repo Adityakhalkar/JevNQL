@@ -76,13 +76,16 @@ const STOP: &[&str] = &[
     "find", "get", "give", "all", "any", "our", "we", "us", "please", "what", "whom", "from", "placed", "made",
     "make", "wrote", "written", "submitted", "opened", "filed", "bought", "left", "raised", "sent", "customers'",
     "there", "do", "does", "did", "one", "ones", "those", "these", "this", "year", "last", "days", "day", "weeks",
-    "week", "months", "month", "number", "amount",
+    "week", "months", "month", "number", "amount", "app", "apps", "product", "service", "average", "avg", "on",
+    "given", "gave", "give", "total", "overall", "$",
 ];
 const CONNECTORS: &[&str] = &["who", "that", "which", "whose", "with", "and", "having", "from", "in", "where", ","];
 const SPEND_WORDS: &[&str] = &["spend", "spent", "spending", "spender", "spenders", "revenue", "paying", "paid", "value", "valuable"];
 const MONEY_COLUMNS: &[&str] = &["amount", "total", "price", "revenue", "value", "spend", "cost"];
 const SUPERLATIVES: &[&str] = &["most", "biggest", "largest", "highest", "top", "best", "high"];
-const FEWEST: &[&str] = &["fewest", "least", "lowest", "smallest"];
+const FEWEST: &[&str] = &["fewest", "least", "lowest", "smallest", "worst"];
+/// Words that refer to a rating column.
+const RATING_WORDS: &[&str] = &["rating", "ratings", "rated", "rate", "star", "stars", "score"];
 /// Verbs that open a judgment ("seems unhappy", "sounds like ...").
 const CUE_VERBS: &[&str] = &["seem", "sound", "appear", "look", "feel", "complain", "mention", "talk", "want", "threaten", "sound"];
 
@@ -109,6 +112,9 @@ fn tokenize(question: &str) -> Vec<Tok> {
     let mut out = Vec::new();
     let mut cur = String::new();
     let flush = |cur: &mut String, out: &mut Vec<Tok>| {
+        while cur.ends_with('.') {
+            cur.pop();
+        }
         if !cur.is_empty() {
             let norm = cur.to_lowercase();
             out.push(Tok { text: cur.clone(), lemma: lemma(&norm), norm });
@@ -116,7 +122,8 @@ fn tokenize(question: &str) -> Vec<Tok> {
         }
     };
     for c in question.chars() {
-        if c.is_alphanumeric() || c == '\'' || c == '’' || c == '-' {
+        let decimal_point = c == '.' && cur.chars().last().is_some_and(|p| p.is_ascii_digit());
+        if c.is_alphanumeric() || c == '\'' || c == '’' || c == '-' || decimal_point {
             cur.push(if c == '’' { '\'' } else { c });
         } else {
             flush(&mut cur, &mut out);
@@ -163,6 +170,8 @@ struct Plan<'v> {
     rank: Option<(String, bool)>,
     limit: Option<i64>,
     notes: Vec<String>,
+    /// Comparisons that could not be linked to any column.
+    unresolved: Vec<String>,
 }
 
 pub fn translate(question: &str, vocab: &Vocabulary, today: (i32, u32, u32)) -> Result<Translation, NlError> {
@@ -197,6 +206,7 @@ pub fn translate(question: &str, vocab: &Vocabulary, today: (i32, u32, u32)) -> 
         rank: None,
         limit: None,
         notes: Vec::new(),
+        unresolved: Vec::new(),
     };
 
     if mentioned.is_none() {
@@ -204,17 +214,38 @@ pub fn translate(question: &str, vocab: &Vocabulary, today: (i32, u32, u32)) -> 
     }
 
     // clauses: split before connectors, keeping the connector with its clause
+    // "with" only opens a clause when a table or quantity follows ("with many
+    // orders"), not inside a judgment ("happy with the product")
+    let opens_clause = |i: usize| {
+        let t = &toks[i];
+        if !CONNECTORS.contains(&t.norm.as_str()) {
+            return false;
+        }
+        if t.norm != "with" {
+            return true;
+        }
+        toks[i + 1..toks.len().min(i + 5)].iter().any(|n| {
+            vocab.tables.iter().any(|tb| lemma(&tb.name) == n.lemma)
+                || number(&n.norm).is_some()
+                || ["many", "few", "no", "most", "fewest", "more", "fewer", "least", "lots", "without"].contains(&n.norm.as_str())
+        })
+    };
     let mut clauses: Vec<Vec<Tok>> = vec![Vec::new()];
-    for t in toks {
-        if CONNECTORS.contains(&t.norm.as_str()) && !clauses.last().expect("non-empty").is_empty() {
+    for (i, t) in toks.iter().enumerate() {
+        if opens_clause(i) && !clauses.last().expect("non-empty").is_empty() {
             clauses.push(Vec::new());
         }
         if t.norm != "," {
-            clauses.last_mut().expect("non-empty").push(t);
+            clauses.last_mut().expect("non-empty").push(t.clone());
         }
     }
     for clause in clauses.iter().filter(|c| !c.is_empty()) {
         plan.clause(clause, today);
+    }
+    if let Some(phrase) = plan.unresolved.first() {
+        return Err(NlError(format!(
+            "couldn't tell which column \"{phrase}\" is about; name it (e.g. \"average rating above 3\", \"total spend over 20\") or write NQL"
+        )));
     }
     Ok(plan.finish())
 }
@@ -300,6 +331,12 @@ impl<'v> Plan<'v> {
                         self.notes.push(format!("  (\"{phrase}\" also appears in {}; using {})", others.join(", "), col.name));
                     }
                     used[i..i + len].iter_mut().for_each(|u| *u = true);
+                    // the column's own name next to its value: "high priority", "status open"
+                    for k in [i.checked_sub(1), Some(i + len)].into_iter().flatten() {
+                        if clause.get(k).is_some_and(|t| t.lemma == lemma(&col.name)) {
+                            used[k] = true;
+                        }
+                    }
                     i += len;
                     matched = true;
                     break;
@@ -319,10 +356,19 @@ impl<'v> Plan<'v> {
                 if !self.aggregates.iter().any(|a| a.alias == alias) {
                     self.aggregates.push(Aggregate { child: rel.child.clone(), alias: alias.clone(), func: format!("SUM {money}"), date_filter: None });
                 }
-                self.rank = Some((alias.clone(), true));
-                self.limit.get_or_insert(20);
-                self.notes.push(format!("\"{}\" → rank by total {}.{} (SUM), highest first", clause[pos].text, rel.child, money));
                 used[pos] = true;
+                match comparison(&norms, &mut used) {
+                    // "paid more than $20": a filter, not a ranking
+                    Some((op, n, phrase)) => {
+                        self.conditions.push(format!("{alias} {op} {n}"));
+                        self.notes.push(format!("\"{} {phrase}\" → total {}.{} {op} {n}", clause[pos].text, rel.child, money));
+                    }
+                    None => {
+                        self.rank = Some((alias.clone(), true));
+                        self.limit.get_or_insert(20);
+                        self.notes.push(format!("\"{}\" → rank by total {}.{} (SUM), highest first", clause[pos].text, rel.child, money));
+                    }
+                }
                 for (j, n) in norms.iter().enumerate() {
                     if SUPERLATIVES.contains(n) || matches!(*n, "big" | "most" | "the") {
                         used[j] = true;
@@ -407,6 +453,44 @@ impl<'v> Plan<'v> {
             }
         }
 
+        // numeric columns: "rated more than 3 stars", "highest rated"
+        if let Some(k) = (0..clause.len()).find(|&k| !used[k] && self.numeric_column(&clause[k].lemma).is_some()) {
+            let (table, column) = self.numeric_column(&clause[k].lemma).expect("found");
+            used[k] = true;
+            let (expr, what) = match table == self.root.name {
+                true => (column.clone(), format!("{table}.{column}")),
+                false => {
+                    let alias = format!("avg_{column}");
+                    if !self.aggregates.iter().any(|a| a.alias == alias) {
+                        self.aggregates.push(Aggregate { child: table.clone(), alias: alias.clone(), func: format!("AVG {column}"), date_filter: None });
+                    }
+                    (alias, format!("average {column} across their {table}"))
+                }
+            };
+            if let Some((op, n, phrase)) = comparison(&norms, &mut used) {
+                self.conditions.push(format!("{expr} {op} {n}"));
+                self.notes.push(format!("\"{} {phrase}\" → {what} {op} {n}", clause[k].text));
+            } else if let Some(j) = (0..clause.len()).find(|&j| !used[j] && (SUPERLATIVES.contains(&norms[j]) || FEWEST.contains(&norms[j]))) {
+                let desc = !FEWEST.contains(&norms[j]);
+                used[j] = true;
+                self.rank = Some((expr, desc));
+                self.limit.get_or_insert(20);
+                self.notes.push(format!("\"{} {}\" → rank by {what}, {}", norms[j], clause[k].text, if desc { "highest first" } else { "lowest first" }));
+            }
+            for (j, n) in norms.iter().enumerate() {
+                if RATING_WORDS.contains(n) {
+                    used[j] = true;
+                }
+            }
+        }
+
+        // a leftover number with a comparison is a fact we could not place:
+        // never send it to Jev as a judgment
+        if let Some((_, _, phrase)) = comparison(&norms, &mut used.clone()) {
+            self.unresolved.push(phrase);
+            return;
+        }
+
         // whatever is left is a judgment
         let content: Vec<usize> = (0..clause.len())
             .filter(|&k| !used[k] && !STOP.contains(&norms[k]) && !CONNECTORS.contains(&norms[k]) && number(norms[k]).is_none())
@@ -451,6 +535,22 @@ impl<'v> Plan<'v> {
                 self.table(&r.child).is_some_and(|t| t.columns.iter().any(|c| c.kind == ColumnKind::Text && c.values.is_empty()))
             })
             .collect()
+    }
+
+    /// A numeric column of the root table or a child table named by `word`.
+    fn numeric_column(&self, word: &str) -> Option<(String, String)> {
+        let matches = |c: &Column| {
+            c.kind == ColumnKind::Number
+                && !c.name.ends_with("_id")
+                && (lemma(&c.name) == word || (c.name.contains("rating") && RATING_WORDS.contains(&word)))
+        };
+        let tables = std::iter::once(self.root.name.clone()).chain(self.children().map(|r| r.child.clone()));
+        for table in tables {
+            if let Some(c) = self.table(&table).and_then(|t| t.columns.iter().find(|c| matches(c))) {
+                return Some((table, c.name.clone()));
+            }
+        }
+        None
     }
 
     fn money_relation(&self) -> Option<(&'v Relation, String)> {
@@ -543,6 +643,46 @@ fn time_window(norms: &[&str], used: &mut [bool], today: (i32, u32, u32)) -> Opt
         if let Some(year) = next.filter(|_| norms[i] == "in").and_then(|w| w.parse::<i32>().ok()).filter(|y| (1900..2100).contains(y)) {
             used[i..=i + 1].iter_mut().for_each(|u| *u = true);
             return Some(Window { lo: format!("DATE '{year}-01-01'"), hi: Some(format!("DATE '{}-01-01'", year + 1)) });
+        }
+    }
+    None
+}
+
+/// "more than 20", "at least 3.5", "under 10", "20 or more", "exactly 5":
+/// the operator, the number, and the phrase; marks its words as used.
+fn comparison(norms: &[&str], used: &mut [bool]) -> Option<(&'static str, String, String)> {
+    let num = |w: &str| w.trim_start_matches('$').parse::<f64>().ok().map(|_| w.trim_start_matches('$').to_string()).or_else(|| number(w).map(|n| n.to_string()));
+    for i in 0..norms.len() {
+        if used[i] {
+            continue;
+        }
+        let at = |k: usize| norms.get(k).copied().unwrap_or("");
+        let (op, words) = match (at(i), at(i + 1)) {
+            ("more" | "greater" | "higher", "than") => (">", 2),
+            ("over" | "above" | "exceeding", _) => (">", 1),
+            ("at", "least") => (">=", 2),
+            ("minimum" | "min", _) => (">=", 1),
+            ("less" | "fewer" | "lower", "than") => ("<", 2),
+            ("under" | "below", _) => ("<", 1),
+            ("at", "most") => ("<=", 2),
+            ("maximum" | "max", _) => ("<=", 1),
+            ("exactly", _) => ("=", 1),
+            _ => match (num(at(i)), at(i + 1), at(i + 2)) {
+                (Some(n), "or", "more") => {
+                    used[i..=i + 2].iter_mut().for_each(|u| *u = true);
+                    return Some((">=", n.clone(), format!("{n} or more")));
+                }
+                (Some(n), "or", "less" | "fewer") => {
+                    used[i..=i + 2].iter_mut().for_each(|u| *u = true);
+                    return Some(("<=", n.clone(), format!("{n} or less")));
+                }
+                _ => continue,
+            },
+        };
+        if let Some(n) = num(at(i + words)) {
+            let phrase = norms[i..=i + words].join(" ");
+            used[i..=i + words].iter_mut().for_each(|u| *u = true);
+            return Some((op, n, phrase));
         }
     }
     None

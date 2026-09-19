@@ -159,6 +159,42 @@ fn judgments_on_the_rows_themselves() {
 }
 
 #[test]
+fn column_names_and_judgment_phrases_stay_whole() {
+    let q = nql("high priority open tickets that sound angry");
+    has(&q, &["priority = 'high'", "status = 'open'", "\"does this ticket sound angry?\""]);
+    assert_eq!(q.matches('"').count(), 2, "one judgment only:\n{q}");
+    let q = nql("customers with many tickets who seem happy with the product");
+    has(&q, &["ticket_count >= 2", "\"Based on their history, does this customer seem happy with the product?\""]);
+    assert_eq!(q.matches('"').count(), 2, "one judgment only:\n{q}");
+}
+
+#[test]
+fn numeric_facts_never_become_judgments() {
+    // the question that went wrong: money and ratings are columns, not judgments
+    let q = nql("customers that paid more than $20 and have rated app more than 3 stars");
+    has(
+        &q,
+        &[
+            "WITH orders AS spend (SUM amount)",
+            "WITH reviews AS avg_rating (AVG rating)",
+            "spend > 20",
+            "avg_rating > 3",
+        ],
+    );
+    assert!(!q.contains('"'), "no judgment expected:\n{q}");
+    assert!(!q.contains("RANK BY spend"), "a comparison is a filter, not a ranking:\n{q}");
+    has(&nql("customers who spent at least 1000.50 this year"), &["spend >= 1000.50", "order_date >= DATE '2026-01-01'"]);
+    has(&nql("highest rated customers"), &["RANK BY avg_rating DESC, customer_id LIMIT 20"]);
+    has(&nql("reviews with rating under 2"), &["FROM reviews", "rating < 2"]);
+}
+
+#[test]
+fn unplaceable_comparisons_are_errors() {
+    let err = translate("customers with loyalty over 5", &vocabulary(), TODAY).unwrap_err();
+    assert!(err.0.contains("couldn't tell which column \"over 5\""), "{err}");
+}
+
+#[test]
 fn unknown_subject_is_reported() {
     let err = translate("hello world", &vocabulary(), TODAY);
     assert!(err.is_err_and(|e| e.0.contains("customers, orders, reviews, tickets")));

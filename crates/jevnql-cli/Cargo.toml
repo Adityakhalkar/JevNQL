@@ -19,3 +19,6 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 serde_json.workspace = true
 serde.workspace = true
 datafusion = "55.1"
+console = "0.16"
+indicatif = "0.18"
+rustyline = "18"

@@ -16,7 +16,7 @@ use jevir::physical::{PhysicalPlan, PhysicalQuery};
 use jevir::{Catalog, LogicalPlan, Schema, SortKey};
 
 use crate::error::ExecError;
-use crate::metrics::ExecMetrics;
+use crate::metrics::{ExecMetrics, ProgressHook};
 use crate::relational::{Lowered, Lowerer};
 use crate::semantic::{SemanticCache, SemanticRuntime};
 use crate::types::schema_to_jevir;
@@ -28,6 +28,7 @@ pub struct Session {
     semantic: Option<Arc<dyn SemanticBackend>>,
     cache: SemanticCache,
     max_semantic_rows: usize,
+    progress: Option<ProgressHook>,
 }
 
 /// Default cap on rows sent to the semantic backend by one operator.
@@ -65,7 +66,13 @@ impl Session {
             semantic: None,
             cache: SemanticCache::default(),
             max_semantic_rows: DEFAULT_MAX_SEMANTIC_ROWS,
+            progress: None,
         }
+    }
+
+    /// Receives live execution events (e.g. to draw a progress bar).
+    pub fn set_progress(&mut self, hook: Option<ProgressHook>) {
+        self.progress = hook;
     }
 
     pub fn with_semantic_backend(mut self, backend: Arc<dyn SemanticBackend>) -> Self {
@@ -159,7 +166,12 @@ impl Session {
                 PhysicalPlan::JevBatch(exec) => {
                     let input = self.run(&exec.input, metrics).await?;
                     let backend = self.semantic.as_deref().ok_or(ExecError::NoSemanticBackend)?;
-                    let runtime = SemanticRuntime { backend, cache: &self.cache, max_rows: self.max_semantic_rows };
+                    let runtime = SemanticRuntime {
+                        backend,
+                        cache: &self.cache,
+                        max_rows: self.max_semantic_rows,
+                        progress: self.progress.as_ref(),
+                    };
                     metrics.semantic_batches += 1;
                     let batch = runtime.evaluate(exec, input.batch, metrics).await?;
                     // semantic operators preserve row order

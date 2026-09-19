@@ -1,4 +1,17 @@
+use std::sync::Arc;
 use std::time::Duration;
+
+/// Live execution events, for progress displays.
+#[derive(Debug, Clone)]
+pub enum Progress {
+    /// A semantic batch is about to send `requests` backend calls for `rows` rows.
+    SemanticStart { label: String, rows: usize, requests: usize },
+    /// `done` of the batch's requests have completed.
+    SemanticAdvance { done: usize },
+    SemanticEnd,
+}
+
+pub type ProgressHook = Arc<dyn Fn(&Progress) + Send + Sync>;
 
 /// Execution metrics reported with every result.
 #[derive(Debug, Clone, Default)]

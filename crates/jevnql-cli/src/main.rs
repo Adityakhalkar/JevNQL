@@ -7,6 +7,7 @@
 mod ask;
 mod render;
 mod repl;
+mod ui;
 
 use std::io::{BufRead, Read, Write};
 use std::path::PathBuf;
@@ -215,20 +216,31 @@ async fn run(cli: Cli) -> Result<ExitCode, Error> {
                 (None, Some(path)) => std::fs::read_to_string(path)?,
                 (None, None) => return Err("give a query with -e or --file".into()),
             };
-            let engine = open(&cli, files, !explain && !emit_ir).await?;
+            let mut engine = open(&cli, files, !explain && !emit_ir).await?;
             let vocab = engine.vocabulary().await?;
-            let document = match ask::compile(&engine, &vocab, &source) {
-                Ok(d) => d,
+            if !*emit_ir && std::io::IsTerminal::is_terminal(&std::io::stdout()) {
+                let ui = ui::Ui::new();
+                engine.session_mut().set_progress(Some(ui.progress_hook()));
+                let done = repl::answer(&ui, &engine, &vocab, &source, *explain, !no_optimize).await;
+                return Ok(if done.is_some() { ExitCode::SUCCESS } else { ExitCode::FAILURE });
+            }
+            let asked = match ask::compile(&engine, &vocab, &source) {
+                Ok(a) => a,
                 Err(e) => {
-                    eprintln!("error: {e}");
+                    eprintln!("error: {}", e.message);
                     return Ok(ExitCode::FAILURE);
                 }
             };
             if *emit_ir {
-                println!("{}", serde_json::to_string_pretty(&document)?);
+                println!("{}", serde_json::to_string_pretty(&asked.document)?);
                 return Ok(ExitCode::SUCCESS);
             }
-            let out = handle(&engine, Request::Run { plan: document, explain_only: *explain, optimize: !no_optimize }).await;
+            if let Some(notes) = &asked.notes {
+                println!("Interpreted as:");
+                notes.iter().for_each(|n| println!("  - {n}"));
+                println!("\n{}\n", asked.nql);
+            }
+            let out = handle(&engine, Request::Run { plan: asked.document, explain_only: *explain, optimize: !no_optimize }).await;
             match out["ok"] == json!(true) {
                 true => print!("{}", out["text"].as_str().unwrap_or_default()),
                 false => {
@@ -238,8 +250,8 @@ async fn run(cli: Cli) -> Result<ExitCode, Error> {
             }
         }
         Command::Repl { no_optimize, files } => {
-            let engine = open(&cli, files, true).await?;
-            repl::run(&engine, !no_optimize).await?;
+            let mut engine = open(&cli, files, true).await?;
+            repl::run(&mut engine, !no_optimize).await?;
         }
         Command::Serve { files } => {
             let engine = open(&cli, files, true).await?;

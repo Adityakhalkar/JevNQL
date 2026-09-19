@@ -12,6 +12,6 @@ pub mod session;
 pub mod types;
 
 pub use error::ExecError;
-pub use metrics::ExecMetrics;
+pub use metrics::{ExecMetrics, Progress, ProgressHook};
 pub use profile::{ColumnProfile, TableProfile};
 pub use session::{DEFAULT_MAX_SEMANTIC_ROWS, QueryResult, Session};

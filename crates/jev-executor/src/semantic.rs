@@ -19,7 +19,7 @@ use jevir::physical::{CachePolicy, JevBatchExec, SemanticOp};
 use serde_json::{Map, Value};
 
 use crate::error::ExecError;
-use crate::metrics::ExecMetrics;
+use crate::metrics::{ExecMetrics, Progress, ProgressHook};
 
 type CacheKey = (String, String, Question);
 
@@ -43,6 +43,7 @@ pub(crate) struct SemanticRuntime<'a> {
     pub backend: &'a dyn SemanticBackend,
     pub cache: &'a SemanticCache,
     pub max_rows: usize,
+    pub progress: Option<&'a ProgressHook>,
 }
 
 impl SemanticRuntime<'_> {
@@ -103,16 +104,31 @@ impl SemanticRuntime<'_> {
             }
         }
 
-        let responses: Vec<_> = futures::stream::iter(pending.into_iter().map(|(si, missing)| {
+        let emit = |event: Progress| {
+            if let Some(hook) = self.progress {
+                hook(&event);
+            }
+        };
+        let label = exec.ops.iter().map(|op| match op {
+            SemanticOp::Filter { .. } => "filter".to_string(),
+            SemanticOp::Score { output, .. } => format!("score {output}"),
+            SemanticOp::Choice { output, .. } => format!("classify {output}"),
+        });
+        emit(Progress::SemanticStart { label: label.collect::<Vec<_>>().join(" + "), rows, requests: pending.len() });
+        let mut stream = futures::stream::iter(pending.into_iter().map(|(si, missing)| {
             let request = SemanticRequest {
                 state: serde_json::from_str(distinct[si]).expect("states are serialized JSON"),
                 questions: missing.iter().map(|&qi| questions[qi].clone()).collect(),
             };
             async move { self.backend.evaluate(&request).await.map(|r| (si, missing, r)) }
         }))
-        .buffer_unordered(exec.concurrency.max(1))
-        .try_collect()
-        .await?;
+        .buffer_unordered(exec.concurrency.max(1));
+        let mut responses = Vec::new();
+        while let Some(response) = stream.try_next().await? {
+            responses.push(response);
+            emit(Progress::SemanticAdvance { done: responses.len() });
+        }
+        emit(Progress::SemanticEnd);
 
         for (si, missing, response) in responses {
             metrics.requests += 1;

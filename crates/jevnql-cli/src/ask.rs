@@ -1,29 +1,54 @@
 //! One entry point for questions: NQL (starts with FROM) or plain English.
 
-use jevnql_core::Engine;
 use serde_json::Value;
 
-/// Compiles a question to a JevIR plan document. Plain English is first
-/// translated to NQL; the interpretation is printed so it can be checked.
-pub fn compile(engine: &Engine, vocab: &jev_nl::Vocabulary, question: &str) -> Result<Value, String> {
-    let is_nql = question.trim_start().get(..4).is_some_and(|w| w.eq_ignore_ascii_case("FROM"));
-    let nql = match is_nql {
-        true => question.to_string(),
-        false => {
-            let t = jev_nl::translate(question, vocab, today()).map_err(|e| e.to_string())?;
-            println!("Interpreted as:");
-            for note in &t.notes {
-                println!("  - {note}");
-            }
-            println!("\n{}\n", indent(&t.nql));
-            t.nql
-        }
-    };
-    jev_nql::compile(&nql, engine.session()).map(|c| c.document).map_err(|e| e.to_string())
+use jevnql_core::Engine;
+
+/// A question compiled to a JevIR plan document.
+pub struct Asked {
+    pub document: Value,
+    /// The NQL that was compiled.
+    pub nql: String,
+    /// How a plain-English question was interpreted (None for NQL input).
+    pub notes: Option<Vec<String>>,
 }
 
-fn indent(text: &str) -> String {
-    text.lines().map(|l| format!("  {l}")).collect::<Vec<_>>().join("\n")
+pub struct AskError {
+    pub message: String,
+    /// The NQL the error refers to, with the 1-based (line, column) if known.
+    pub nql: Option<(String, Option<(usize, usize)>)>,
+}
+
+/// NQL starts with FROM, after any blank or `--` comment lines.
+pub fn is_nql(question: &str) -> bool {
+    let first = question.lines().map(str::trim).find(|l| !l.is_empty() && !l.starts_with("--")).unwrap_or("");
+    first.get(..4).is_some_and(|w| w.eq_ignore_ascii_case("FROM"))
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn nql_is_recognized_after_comments() {
+        assert!(super::is_nql("-- top customers\n\nFROM customers"));
+        assert!(super::is_nql("  from customers"));
+        assert!(!super::is_nql("customers from India"));
+        assert!(!super::is_nql("-- FROM in a comment\nshow me customers"));
+    }
+}
+
+/// Plain English is translated to NQL first; NQL is compiled as written.
+pub fn compile(engine: &Engine, vocab: &jev_nl::Vocabulary, question: &str) -> Result<Asked, AskError> {
+    let (nql, notes) = match is_nql(question) {
+        true => (question.to_string(), None),
+        false => {
+            let t = jev_nl::translate(question, vocab, today()).map_err(|e| AskError { message: e.to_string(), nql: None })?;
+            (t.nql, Some(t.notes))
+        }
+    };
+    match jev_nql::compile(&nql, engine.session()) {
+        Ok(c) => Ok(Asked { document: c.document, nql, notes }),
+        Err(e) => Err(AskError { message: e.message.clone(), nql: Some((nql, e.position)) }),
+    }
 }
 
 /// Today's date (UTC) as (year, month, day).

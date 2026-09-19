@@ -8,7 +8,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use jev_executor::Session;
-pub use jev_executor::{DEFAULT_MAX_SEMANTIC_ROWS, ExecError, ExecMetrics, QueryResult, TableProfile};
+pub use jev_executor::{DEFAULT_MAX_SEMANTIC_ROWS, ExecError, ExecMetrics, Progress, ProgressHook, QueryResult, TableProfile};
 use jev_optimizer::{PhysicalConfig, RuleApplication, optimize, physical_plan};
 use jev_provider::simulated::SimulatedBackend;
 use jev_provider::typesafe::TypeSafeJevBackend;
