@@ -1,0 +1,32 @@
+{
+  "name": "jevnql",
+  "version": "0.1.0",
+  "description": "Ask your CSV and Parquet files questions in plain English: deterministic work on DataFusion, judgments on Jev",
+  "type": "module",
+  "bin": {
+    "jevnql": "bin/jevnql.js"
+  },
+  "files": [
+    "bin"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Adityakhalkar/JevNQL.git"
+  },
+  "homepage": "https://github.com/Adityakhalkar/JevNQL#readme",
+  "keywords": [
+    "sql",
+    "csv",
+    "parquet",
+    "datafusion",
+    "llm",
+    "semantic",
+    "query",
+    "cli",
+    "jev"
+  ]
+}

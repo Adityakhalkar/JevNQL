@@ -1,0 +1,72 @@
+name: release
+
+# Tag a version to publish binaries:  git tag v0.1.0 && git push origin v0.1.0
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to build and attach binaries to"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    # a missing runner (e.g. arm64 Linux) must not block the release
+    continue-on-error: ${{ matrix.optional || false }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            os: macos-14
+          - target: x86_64-apple-darwin
+            os: macos-13
+          # built on the oldest supported runner, so older glibc still works
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-22.04
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-22.04-arm
+            optional: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+      - run: cargo build --release --locked -p jevnql-cli --target ${{ matrix.target }}
+      - name: Package
+        run: |
+          set -eu
+          archive="jevnql-${{ matrix.target }}.tar.gz"
+          tar -czf "$archive" -C "target/${{ matrix.target }}/release" jevnql
+          shasum -a 256 "$archive" > "$archive.sha256"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: jevnql-${{ matrix.target }}
+          path: jevnql-*.tar.gz*
+
+  release:
+    needs: build
+    if: always() && needs.build.result != 'cancelled'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          set -eu
+          gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --title "$TAG" --generate-notes
+          gh release upload "$TAG" jevnql-*.tar.gz jevnql-*.tar.gz.sha256 --clobber

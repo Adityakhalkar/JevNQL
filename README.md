@@ -83,20 +83,29 @@ The query is written in reading order: fetch every history, score everyone, then
 
 ## Quickstart
 
-Requirements: [Rust](https://rustup.rs) ≥ 1.88. Python 3 (standard library only) is used by the data generator and the benchmark script.
+Point it at your own `.csv` or `.parquet` files — no Rust, no build:
 
 ```bash
-git clone https://github.com/Adityakhalkar/JevNQL && cd JevNQL
-cargo build --release -p jevnql-cli             # first build takes a few minutes
-python3 examples/generate.py                    # synthetic data -> examples/data/demo/
-target/release/jevnql examples/data/demo/*.csv  # the shell
+npx jevnql path/to/*.csv                                  # needs Node 18+
 ```
 
-To install just the `jevnql` command for your own CSV or Parquet files:
+```bash
+curl -fsSL https://raw.githubusercontent.com/Adityakhalkar/JevNQL/main/install.sh | sh
+jevnql path/to/*.csv                                      # a single binary, no runtime
+```
+
+Prebuilt for macOS (Apple Silicon, Intel) and Linux (x86-64, ARM64); binaries are also on the [releases page](https://github.com/Adityakhalkar/JevNQL/releases). From source instead (needs [Rust](https://rustup.rs) ≥ 1.88):
 
 ```bash
 cargo install --git https://github.com/Adityakhalkar/JevNQL jevnql-cli
-jevnql path/to/*.csv
+```
+
+To try the demo dataset, clone the repository (the generator needs Python 3, standard library only):
+
+```bash
+git clone https://github.com/Adityakhalkar/JevNQL && cd JevNQL
+python3 examples/generate.py                    # synthetic data -> examples/data/demo/
+jevnql examples/data/demo/*.csv                 # or: cargo run --release -p jevnql-cli -- examples/data/demo/*.csv
 ```
 
 ```text
@@ -244,3 +253,7 @@ benchmarks/       naive vs optimized suite and reports
 - Two-stage rankings in NQL; late Fetch past SemanticFilter.
 - Retrieval (full-text search, embeddings) as an opt-in candidate pre-filter with stated recall.
 - Cost-based semantic planning, a persistent semantic cache, semantic indexes.
+
+## License
+
+MIT — see [LICENSE](LICENSE).

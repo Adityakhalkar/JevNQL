@@ -3,6 +3,7 @@ name = "jev-nql"
 version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
+license.workspace = true
 description = "NQL: a structured natural query language compiled to logical JevIR"
 
 [dependencies]

@@ -3,6 +3,7 @@ name = "jev-provider"
 version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
+license.workspace = true
 description = "Semantic backend interface for JevNQL, and the TypeSafe Jev backend"
 
 [dependencies]
